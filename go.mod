@@ -1,4 +1,4 @@
-module fib
+module example.com/fibcalc
 
 go 1.25.0
 
