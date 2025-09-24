@@ -261,7 +261,13 @@ func executeCalculations(ctx context.Context, calculators []fibonacci.Calculator
 			// Si `err` est non-nul, `errgroup` se chargera d'annuler le contexte pour
 			// les autres goroutines. Si `err` est `nil`, cela signale simplement
 			// que cette goroutine a terminé avec succès.
-			return err
+
+			// MODIFICATION POUR LE TEST : On ne veut pas que l'échec d'un seul calculateur
+			// annule les autres via errgroup. On veut que tous les calculateurs terminent
+			// (ou soient annulés par le timeout/signal externe) pour pouvoir les comparer.
+			// L'erreur est déjà stockée dans `results[idx]`, donc on peut la traiter plus tard.
+			// On retourne `nil` pour que errgroup ne déclenche pas d'annulation.
+			return nil
 		})
 	}
 
