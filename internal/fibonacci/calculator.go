@@ -59,17 +59,17 @@ type coreCalculator interface {
 // avec la Lookup Table) de manière transparente.
 //
 // Avantages :
-// - On évite de dupliquer la logique de la Lookup Table dans chaque algorithme (FastDoubling, Matrix).
-// - On peut "composer" des fonctionnalités. On pourrait avoir plusieurs couches de décorateurs.
-// - Respecte le principe Ouvert/Fermé (Open/Closed Principle) : on peut ajouter de
-//   nouvelles fonctionnalités (décorateurs) sans modifier le code existant (les `coreCalculator`).
+//   - On évite de dupliquer la logique de la Lookup Table dans chaque algorithme (FastDoubling, Matrix).
+//   - On peut "composer" des fonctionnalités. On pourrait avoir plusieurs couches de décorateurs.
+//   - Respecte le principe Ouvert/Fermé (Open/Closed Principle) : on peut ajouter de
+//     nouvelles fonctionnalités (décorateurs) sans modifier le code existant (les `coreCalculator`).
 type FibCalculator struct {
 	core coreCalculator
 }
 
 // NewCalculator est une "factory function" qui crée et retourne un décorateur
 // `FibCalculator` configuré avec un calculateur de cœur.
-func NewCalculator(core core.Calculator) Calculator {
+func NewCalculator(core coreCalculator) Calculator {
 	return &FibCalculator{core: core}
 }
 
@@ -215,9 +215,9 @@ func (m *matrix) Set(other *matrix) {
 }
 
 type matrixState struct {
-	res                            *matrix    // Matrice résultat
-	p                              *matrix    // Matrice de puissance
-	tempMatrix                     *matrix    // Matrice temporaire
+	res                            *matrix  // Matrice résultat
+	p                              *matrix  // Matrice de puissance
+	tempMatrix                     *matrix  // Matrice temporaire
 	t1, t2, t3, t4, t5, t6, t7, t8 *big.Int // Entiers temporaires
 }
 
@@ -227,7 +227,7 @@ var matrixStatePool = sync.Pool{
 			res:        newMatrix(),
 			p:          newMatrix(),
 			tempMatrix: newMatrix(),
-			t1: new(big.Int), t2: new(big.Int), t3: new(big.Int), t4: new(big.Int),
+			t1:         new(big.Int), t2: new(big.Int), t3: new(big.Int), t4: new(big.Int),
 			t5: new(big.Int), t6: new(big.Int), t7: new(big.Int), t8: new(big.Int),
 		}
 	},

@@ -73,9 +73,9 @@ type AppConfig struct {
 // C'est une map qui associe une chaîne de caractères (le nom de l'algorithme) à une
 // implémentation concrète de l'interface `fibonacci.Calculator`.
 // Avantages :
-//  - Découplage : Le code principal n'a pas besoin de connaître les détails de chaque algo.
-//  - Extensibilité : Pour ajouter un nouvel algorithme, il suffit de l'ajouter à cette map.
-//    Aucune autre partie du code n'a besoin d'être modifiée.
+//   - Découplage : Le code principal n'a pas besoin de connaître les détails de chaque algo.
+//   - Extensibilité : Pour ajouter un nouvel algorithme, il suffit de l'ajouter à cette map.
+//     Aucune autre partie du code n'a besoin d'être modifiée.
 var calculatorRegistry = map[string]fibonacci.Calculator{
 	// Le décorateur `NewCalculator` encapsule chaque implémentation de base
 	// pour y ajouter des fonctionnalités communes (comme la Lookup Table).

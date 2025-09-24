@@ -19,13 +19,13 @@ import (
 // Cette méthode repose sur le fait que la suite de Fibonacci peut être exprimée
 // par une transformation linéaire représentée par une matrice.
 //
-//  [ F(n+1) ] = [ 1  1 ] * [ F(n)   ]
-//  [ F(n)   ]   [ 1  0 ]   [ F(n-1) ]
+//	[ F(n+1) ] = [ 1  1 ] * [ F(n)   ]
+//	[ F(n)   ]   [ 1  0 ]   [ F(n-1) ]
 //
 // En appliquant cette transformation `n` fois, on obtient :
 //
-//  [ F(n+1) ] = [ 1  1 ]^n * [ F(1) ]
-//  [ F(n)   ]   [ 1  0 ]    [ F(0) ]
+//	[ F(n+1) ] = [ 1  1 ]^n * [ F(1) ]
+//	[ F(n)   ]   [ 1  0 ]    [ F(0) ]
 //
 // Puisque F(1)=1 et F(0)=0, le calcul de F(n) se résume à calculer la matrice
 // Q = [[1, 1], [1, 0]] élevée à la puissance `n`, et à prendre l'élément

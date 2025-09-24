@@ -23,14 +23,14 @@ import (
 // Il est conçu pour être lancé dans sa propre goroutine.
 //
 // EXPLICATION ACADÉMIQUE : Paramètres de la fonction
-// - `wg *sync.WaitGroup`: Permet à l'appelant d'attendre que cette goroutine ait
-//   fini son travail (par exemple, après la fermeture du canal).
-// - `progressChan <-chan fibonacci.ProgressUpdate`: Un canal en lecture seule (`<-chan`)
-//   qui sert de source de données pour les mises à jour de progression.
-// - `numCalculators int`: Le nombre de producteurs qui envoient des données sur le canal.
-// - `out io.Writer`: Une interface pour la sortie, ce qui permet de tester facilement
-//   la fonction en lui passant un buffer en mémoire (`bytes.Buffer`) au lieu de
-//   la sortie standard (`os.Stdout`).
+//   - `wg *sync.WaitGroup`: Permet à l'appelant d'attendre que cette goroutine ait
+//     fini son travail (par exemple, après la fermeture du canal).
+//   - `progressChan <-chan fibonacci.ProgressUpdate`: Un canal en lecture seule (`<-chan`)
+//     qui sert de source de données pour les mises à jour de progression.
+//   - `numCalculators int`: Le nombre de producteurs qui envoient des données sur le canal.
+//   - `out io.Writer`: Une interface pour la sortie, ce qui permet de tester facilement
+//     la fonction en lui passant un buffer en mémoire (`bytes.Buffer`) au lieu de
+//     la sortie standard (`os.Stdout`).
 func DisplayAggregateProgress(wg *sync.WaitGroup, progressChan <-chan fibonacci.ProgressUpdate, numCalculators int, out io.Writer) {
 	// `defer wg.Done()` garantit que le WaitGroup est décrémenté à la fin de la fonction,
 	// signalant à l'appelant que cette goroutine a terminé son exécution.
@@ -86,7 +86,7 @@ func DisplayAggregateProgress(wg *sync.WaitGroup, progressChan <-chan fibonacci.
 				}
 				printBar()
 				fmt.Fprintln(out) // Passe à la ligne suivante pour ne pas écraser la barre finale.
-				return           // Termine la goroutine.
+				return            // Termine la goroutine.
 			}
 			if update.CalculatorIndex < len(progresses) {
 				progresses[update.CalculatorIndex] = update.Value

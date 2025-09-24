@@ -83,7 +83,7 @@ func (fd *OptimizedFastDoubling) CalculateCore(ctx context.Context, progressChan
 		// Les variables s.f_k et s.f_k1 sont réutilisées et écrasées.
 
 		// 1. Calcul du terme commun `2*F(k+1) - F(k)` (stocké dans s.t2)
-		s.t2.Lsh(s.f_k1, 1)    // s.t2 = s.f_k1 << 1  (i.e., 2*F(k+1))
+		s.t2.Lsh(s.f_k1, 1)   // s.t2 = s.f_k1 << 1  (i.e., 2*F(k+1))
 		s.t2.Sub(s.t2, s.f_k) // s.t2 = s.t2 - s.f_k
 
 		// --- OPTIMISATION : PARALLÉLISME DE TÂCHES (TASK PARALLELISM) ---
@@ -145,9 +145,9 @@ func (fd *OptimizedFastDoubling) CalculateCore(ctx context.Context, progressChan
 		if (n>>uint(i))&1 == 1 {
 			// La nouvelle paire (f_k, f_k+1) devient (f_k+1, f_k + f_k+1).
 			// On utilise s.t1 comme variable temporaire pour effectuer l'échange.
-			s.t1.Set(s.f_k1)             // t1 = f_k1
+			s.t1.Set(s.f_k1)          // t1 = f_k1
 			s.f_k1.Add(s.f_k1, s.f_k) // f_k1 = f_k1 + f_k
-			s.f_k.Set(s.t1)             // f_k = t1
+			s.f_k.Set(s.t1)           // f_k = t1
 		}
 	}
 
