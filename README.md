@@ -18,9 +18,11 @@ Il démontre des techniques avancées d'ingénierie de performance et d'architec
 
 *   [Go](https://golang.org/dl/) (Version 1.21 ou supérieure recommandée)
 
-## Installation et Compilation
+## Installation et Exécution
 
-1. Clonez le dépôt :
+* Clonez le dépôt :
    ```bash
    git clone [https://github.com/VOTRE_USERNAME/fibcalc-hp.git](https://github.com/VOTRE_USERNAME/fibcalc-hp.git)
    cd fibcalc-hp
+   go run .\cmd\fibcalc\main.go
+
