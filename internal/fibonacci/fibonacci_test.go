@@ -31,6 +31,7 @@ package fibonacci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -53,6 +54,7 @@ var knownFibResults = []struct {
 	{50, "12586269025"},
 	{92, "7540113804746346429"},
 	{93, "12200160415121876738"}, // Dépasse uint64
+	{94, "19740274219868223167"},
 	{100, "354224848179261915075"},
 	{200, "280571172992510140037611932413038677189525"},
 	{1000, "43466557686937456435688527675040625802564660517371780402481729089536555417949051890403879840079255169295922593080322634775209689623239873322471161642996440906533187938298969649928516003704476137795166849228875"},
@@ -220,7 +222,7 @@ func TestContextCancellation(t *testing.T) {
 			if err == nil {
 				t.Fatal("Le calcul aurait dû être annulé par le contexte, mais il s'est terminé sans erreur.")
 			}
-			if err != context.DeadlineExceeded {
+			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("Erreur inattendue. Attendu: %v, Obtenu: %v", context.DeadlineExceeded, err)
 			}
 		})
