@@ -1,8 +1,8 @@
 // EXPLICATION ACADÉMIQUE :
-// Ce fichier implémente l'algorithme "Fast Doubling", qui est l'un des moyens les
-// plus rapides connus pour calculer les nombres de Fibonacci. Il illustre des
-// concepts de performance très avancés : l'optimisation algorithmique, le
-// parallélisme au niveau des tâches et la gestion de la mémoire.
+// Ce fichier implémente l'algorithme "Fast Doubling", optimisé pour la haute performance.
+// Il combine une complexité algorithmique optimale O(log n) avec des optimisations
+// système avancées : parallélisme au niveau des tâches (Task Parallelism) et gestion
+// mémoire zéro-allocation.
 package fibonacci
 
 import (
@@ -14,149 +14,162 @@ import (
 )
 
 // OptimizedFastDoubling est une implémentation de l'interface `coreCalculator`.
+//
 // EXPLICATION ACADÉMIQUE : L'algorithme Fast Doubling (O(log n))
+// L'algorithme utilise des identités mathématiques pour "sauter" des étapes,
+// permettant un calcul en temps logarithmique.
 //
-// L'approche itérative classique pour Fibonacci (F(n) = F(n-1) + F(n-2)) a une
-// complexité temporelle de O(n). Pour de très grands `n`, c'est trop lent.
-// L'algorithme "Fast Doubling" utilise une paire d'identités pour calculer F(n)
-// en seulement O(log n) étapes, ce qui est exponentiellement plus rapide.
-//
-// Les identités sont :
+// Les identités clés sont :
 // F(2k)   = F(k) * [2*F(k+1) - F(k)]
 // F(2k+1) = F(k+1)² + F(k)²
 //
-// Comment ça marche ?
-// L'algorithme fonctionne en considérant la représentation binaire de `n`. Il
-// commence par le bit de poids le plus fort (MSB) et parcourt les bits vers la
-// droite.
-// À chaque étape, il calcule (F(2k), F(2k+1)) à partir de (F(k), F(k+1)) (l'étape "Doubling").
-// Si le bit courant de `n` est 1, il applique une étape supplémentaire pour passer
-// de (F(2k), F(2k+1)) à (F(2k+1), F(2k+2)) (l'étape "Addition").
-// En parcourant tous les bits de `n`, on arrive au résultat final F(n).
+// L'algorithme parcourt la représentation binaire de `n`. À chaque bit, il applique
+// l'étape de "Doubling" (k -> 2k). Si le bit est 1, il applique une étape
+// d'addition (2k -> 2k+1).
 type OptimizedFastDoubling struct{}
 
-// Name retourne le nom de l'algorithme, y compris les optimisations clés.
+// Name retourne le nom descriptif de l'algorithme et de ses optimisations.
 func (fd *OptimizedFastDoubling) Name() string {
-	return "OptimizedFastDoubling (3-Way-Parallel+ZeroAlloc+LUT)"
+	return "Optimized Fast Doubling (O(log n) | 3-Way Parallel | Zero-Alloc)"
 }
 
 // CalculateCore implémente la logique principale de l'algorithme.
-func (fd *OptimizedFastDoubling) CalculateCore(ctx context.Context, progressChan chan<- ProgressUpdate, calcIndex int, n uint64, threshold int) (*big.Int, error) {
-	// Étape 1 : Récupération d'un état depuis le pool d'objets.
-	// C'est le cœur de la stratégie "zéro-allocation".
-	s := getState()
-	// `defer putState(s)` garantit que l'état est retourné au pool à la fin de la
-	// fonction, qu'elle se termine normalement ou par une erreur. C'est un idiome
-	// Go très courant pour la gestion des ressources.
-	defer putState(s)
+// [REFACTORING] Signature mise à jour pour correspondre à la nouvelle interface coreCalculator.
+func (fd *OptimizedFastDoubling) CalculateCore(ctx context.Context, reporter ProgressReporter, n uint64, threshold int) (*big.Int, error) {
 
-	// `bits.Len64(n)` donne le nombre de bits nécessaires pour représenter `n`,
-	// ce qui correspond au nombre d'itérations de la boucle principale.
+	// --- INITIALISATION & GESTION MÉMOIRE ---
+
+	// Étape 1 : Acquisition d'un état depuis le pool (Stratégie "Zéro-Allocation").
+	// [REFACTORING] Utilisation des fonctions modernisées acquire/release.
+	s := acquireState()
+	// `defer releaseState(s)` garantit que l'état est retourné au pool à la fin,
+	// même en cas d'erreur (idiome essentiel pour la gestion des ressources).
+	defer releaseState(s)
+
+	// `bits.Len64(n)` donne le nombre d'itérations nécessaires (la taille binaire de n).
 	numBits := bits.Len64(n)
-	invNumBits := 1.0 / float64(numBits) // Pré-calcul pour le rapport de progression.
 
-	var wg sync.WaitGroup
-	// Le parallélisme n'est utile que s'il y a plus d'un cœur CPU disponible.
+	// [BONIFICATION] Gestion robuste du cas limite n=0 (numBits=0).
+	if numBits == 0 {
+		// F(0) = 0. L'état initialisé a déjà f_k=0 (garanti par acquireState/Reset).
+		return new(big.Int).Set(s.f_k), nil
+	}
+
+	// Pré-calcul de l'inverse pour optimiser le calcul de la progression dans la boucle.
+	invNumBits := 1.0 / float64(numBits)
+
+	// Le parallélisme n'est bénéfique que si on dispose de plusieurs cœurs CPU.
 	useParallel := runtime.NumCPU() > 1
 
-	// Boucle principale : Parcours des bits de `n` du plus significatif (MSB)
-	// au moins significatif (LSB).
+	// --- BOUCLE PRINCIPALE (O(log n) itérations) ---
+	// Parcours des bits de `n` du plus significatif (MSB) au moins significatif (LSB).
 	for i := numBits - 1; i >= 0; i-- {
 
 		// --- GESTION DE L'ANNULATION (COOPERATIVE CANCELLATION) ---
 		// EXPLICATION ACADÉMIQUE : Annulation Coopérative
-		// Une goroutine ne peut pas être arrêtée de force de l'extérieur. Elle doit
-		// coopérer en vérifiant périodiquement si une annulation a été demandée.
-		// En vérifiant `ctx.Err() != nil` au début de chaque itération (qui peut être
-		// longue), on s'assure que le calcul s'arrêtera rapidement si le contexte
-		// est annulé (par timeout ou par un signal de l'utilisateur).
+		// On vérifie périodiquement le contexte pour permettre un arrêt propre.
+		// NOTE IMPORTANTE : Les opérations de `math/big` (comme Mul) ne sont pas
+		// interruptibles. Si une multiplication prend beaucoup de temps, l'annulation
+		// ne sera détectée qu'après la fin de cette opération (par exemple, après wg.Wait()).
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// Rapporte la progression (si le canal existe).
-		if progressChan != nil && i < numBits-1 {
-			reportProgress(progressChan, calcIndex, float64(numBits-1-i)*invNumBits)
+
+		// Rapport de progression.
+		// [REFACTORING] Utilisation de la fonction reporter découplée.
+		if i < numBits-1 {
+			// Calcul de la progression basée sur le nombre d'itérations terminées.
+			reporter(float64(numBits-1-i) * invNumBits)
 		}
 
 		// --- ÉTAPE DE DOUBLING : Calcul de F(2k) et F(2k+1) ---
-		// On calcule les nouveaux (F_k, F_k+1) qui correspondront à F(2k) et F(2k+1).
-		// Les variables s.f_k et s.f_k1 sont réutilisées et écrasées.
 
-		// 1. Calcul du terme commun `2*F(k+1) - F(k)` (stocké dans s.t2)
-		s.t2.Lsh(s.f_k1, 1)   // s.t2 = s.f_k1 << 1  (i.e., 2*F(k+1))
-		s.t2.Sub(s.t2, s.f_k) // s.t2 = s.t2 - s.f_k
+		// 1. Calcul du terme commun : t2 = 2*F(k+1) - F(k)
+		s.t2.Lsh(s.f_k1, 1)   // t2 = f_k1 << 1 (multiplication par 2)
+		s.t2.Sub(s.t2, s.f_k) // t2 = t2 - f_k
 
-		// --- OPTIMISATION : PARALLÉLISME DE TÂCHES (TASK PARALLELISM) ---
-		// EXPLICATION ACADÉMIQUE :
-		// L'étape de "doubling" nécessite trois multiplications coûteuses :
-		//  - `F(k) * (2*F(k+1) - F(k))`  (pour calculer F(2k))
-		//  - `F(k+1)²`                     (partie de F(2k+1))
-		//  - `F(k)²`                       (partie de F(2k+1))
-		// Ces trois opérations sont mathématiquement indépendantes ! On peut donc les
-		// exécuter en parallèle sur différents cœurs CPU pour accélérer le calcul.
-
-		// On active le parallélisme seulement si `useParallel` est vrai et si la
-		// taille des nombres (`BitLen`) dépasse le `threshold`.
+		// 2. Multiplications (Cœur de l'optimisation parallèle)
+		// EXPLICATION ACADÉMIQUE : Seuil de Parallélisme
+		// Activation conditionnelle basée sur le nombre de cœurs et la taille des nombres (threshold).
+		// Pour les petits nombres, le coût de création/synchronisation des goroutines est supérieur au gain.
 		if useParallel && s.f_k1.BitLen() > threshold {
-			// `wg.Add(3)` indique au WaitGroup que nous allons attendre 3 goroutines.
-			wg.Add(3)
-
-			// Goroutine A: t3 = F(k) * (2*F(k+1) - F(k))
-			go func(dest, src1, src2 *big.Int) {
-				defer wg.Done() // Signale la fin de cette goroutine.
-				dest.Mul(src1, src2)
-			}(s.t3, s.f_k, s.t2) // Les arguments sont passés pour éviter les problèmes de capture de variables de boucle.
-
-			// Goroutine B: t1 = F(k+1)²
-			go func(dest, src *big.Int) {
-				defer wg.Done()
-				dest.Mul(src, src)
-			}(s.t1, s.f_k1)
-
-			// Goroutine C: t4 = F(k)²
-			go func(dest, src *big.Int) {
-				defer wg.Done()
-				dest.Mul(src, src)
-			}(s.t4, s.f_k)
-
-			// `wg.Wait()` bloque l'exécution jusqu'à ce que `wg.Done()` ait été
-			// appelé 3 fois. Cela garantit que les 3 multiplications sont terminées
-			// avant de continuer.
-			wg.Wait()
-
+			// [REFACTORING] Appel à la fonction d'assistance dédiée pour le parallélisme.
+			parallelMultiply3(s)
 		} else {
-			// Si le parallélisme n'est pas activé, on exécute les multiplications
-			// de manière séquentielle.
-			s.t3.Mul(s.f_k, s.t2)
-			s.t1.Mul(s.f_k1, s.f_k1)
-			s.t4.Mul(s.f_k, s.f_k)
+			// Exécution séquentielle si le parallélisme n'est pas activé.
+			s.t3.Mul(s.f_k, s.t2)    // A: F(k) * t2
+			s.t1.Mul(s.f_k1, s.f_k1) // B: F(k+1)²
+			s.t4.Mul(s.f_k, s.f_k)   // C: F(k)²
 		}
 
-		// Assemblage final des résultats des multiplications.
-		// F(2k) = s.t3
-		// F(2k+1) = s.t1 + s.t4
+		// 3. Assemblage final des résultats.
+		// F(2k) = t3
+		// F(2k+1) = t1 + t4
 		s.f_k.Set(s.t3)
 		s.f_k1.Add(s.t1, s.t4)
 
 		// --- ÉTAPE D'ADDITION CONDITIONNELLE ---
-		// Si le i-ème bit de `n` est 1, on doit passer de (F(2k), F(2k+1))
-		// à (F(2k+1), F(2k+2)).
-		// F(2k+2) = F(2k+1) + F(2k).
+		// Si le i-ème bit de `n` est 1.
 		if (n>>uint(i))&1 == 1 {
-			// La nouvelle paire (f_k, f_k+1) devient (f_k+1, f_k + f_k+1).
-			// On utilise s.t1 comme variable temporaire pour effectuer l'échange.
-			s.t1.Set(s.f_k1)          // t1 = f_k1
-			s.f_k1.Add(s.f_k1, s.f_k) // f_k1 = f_k1 + f_k
-			s.f_k.Set(s.t1)           // f_k = t1
+			// Passage de (F(k'), F(k'+1)) à (F(k'+1), F(k'+2)).
+			// F(k'+2) = F(k'+1) + F(k').
+			// Utilisation de t1 comme temporaire pour l'échange (swap).
+			s.t1.Set(s.f_k1)
+			s.f_k1.Add(s.f_k1, s.f_k)
+			s.f_k.Set(s.t1)
 		}
 	}
 
-	reportProgress(progressChan, calcIndex, 1.0)
-	// EXPLICATION ACADÉMIQUE : Retourner une copie
-	// `s.f_k` est un pointeur vers une valeur qui fait partie de l'objet `s` qui
-	// va être retourné au `sync.Pool`. Il ne faut JAMAIS retourner un pointeur
-	// vers une mémoire qui va être recyclée.
-	// On crée donc une nouvelle copie `new(big.Int).Set(s.f_k)` pour le résultat final,
-	// garantissant que l'appelant a sa propre mémoire, indépendante du pool.
+	// La progression finale (1.0) est garantie par le décorateur (FibCalculator), pas ici.
+
+	// EXPLICATION ACADÉMIQUE : Sécurité Mémoire et Pooling
+	// CRUCIAL : `s.f_k` fait partie de l'objet `s` qui va être retourné au pool et réutilisé.
+	// Il ne faut JAMAIS retourner un pointeur vers une mémoire recyclée.
+	// On crée une NOUVELLE copie indépendante pour le résultat final.
 	return new(big.Int).Set(s.f_k), nil
+}
+
+// [REFACTORING] Extraction de la logique de parallélisme.
+
+// parallelMultiply3 exécute les trois multiplications indépendantes de l'étape de
+// "doubling" en parallèle.
+// Prérequis : s.t2 doit contenir [2*F(k+1) - F(k)].
+func parallelMultiply3(s *calculationState) {
+	// EXPLICATION ACADÉMIQUE : Parallélisme de Tâches (Task Parallelism)
+	// Les trois multiplications (A, B, C) sont indépendantes et peuvent être exécutées simultanément.
+	//
+	// Stratégie "On-Demand" vs "Worker Pool" :
+	// Nous créons 3 nouvelles goroutines à chaque itération. Bien que cela ait un coût,
+	// il est souvent inférieur au coût de synchronisation (via canaux) nécessaire pour
+	// utiliser un pool de workers persistant pour seulement 3 tâches fixes.
+	// Le lancement "On-Demand" est ici considéré comme optimal.
+
+	var wg sync.WaitGroup
+	wg.Add(3) // On attend 3 tâches.
+
+	// Goroutine A: t3 = F(k) * t2
+	// EXPLICATION ACADÉMIQUE : Sécurité des Closures
+	// On passe les pointeurs en arguments de la fonction anonyme (closure). C'est crucial
+	// pour garantir que chaque goroutine travaille avec les bonnes données sans
+	// risque de "race condition" ou de capture incorrecte des variables de l'état `s`.
+	go func(dest, src1, src2 *big.Int) {
+		defer wg.Done()
+		dest.Mul(src1, src2)
+	}(s.t3, s.f_k, s.t2)
+
+	// Goroutine B: t1 = F(k+1)²
+	go func(dest, src *big.Int) {
+		defer wg.Done()
+		// Note : Mul(x, x) est optimisé en interne pour le calcul du carré (squaring).
+		dest.Mul(src, src)
+	}(s.t1, s.f_k1)
+
+	// Goroutine C: t4 = F(k)²
+	go func(dest, src *big.Int) {
+		defer wg.Done()
+		dest.Mul(src, src)
+	}(s.t4, s.f_k)
+
+	// Synchronisation : Bloque jusqu'à ce que les 3 goroutines aient terminé.
+	wg.Wait()
 }
