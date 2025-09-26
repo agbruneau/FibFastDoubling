@@ -277,16 +277,26 @@ func DisplayResult(result *big.Int, n uint64, duration time.Duration, verbose bo
 // formatNumberString ajoute des séparateurs de milliers à une chaîne numérique pour une meilleure lisibilité.
 // L'implémentation est optimisée pour minimiser les allocations mémoire.
 func formatNumberString(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	prefix := ""
+	if s[0] == '-' {
+		prefix = "-"
+		s = s[1:]
+	}
+
 	n := len(s)
 	if n <= 3 {
-		return s
+		return prefix + s
 	}
 
 	// On utilise ici aussi `strings.Builder` pour une construction efficace.
 	var builder strings.Builder
 	// Calcul de la capacité exacte requise pour éviter les réallocations :
 	// `n` pour les chiffres, et `(n-1)/3` pour le nombre de séparateurs.
-	builder.Grow(n + (n - 1)/3)
+	builder.Grow(len(prefix) + n + (n-1)/3)
+	builder.WriteString(prefix)
 
 	// Logique de calcul pour le premier groupe de chiffres (qui peut être de 1, 2 ou 3 chiffres).
 	// Exemple : pour s = "12345" (n=5), n % 3 = 2. Le premier groupe est "12".
