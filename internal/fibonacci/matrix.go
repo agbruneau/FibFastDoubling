@@ -121,14 +121,14 @@ func multiplyMatrices(dest, m1, m2 *matrix, s *matrixState, useParallel bool, th
 }
 
 // CalculateCore implémente l'algorithme d'exponentiation par carré.
-func (me *MatrixExponentiation) CalculateCore(ctx context.Context, progressChan chan<- ProgressUpdate, calcIndex int, n uint64, threshold int) (*big.Int, error) {
+func (me *MatrixExponentiation) CalculateCore(ctx context.Context, reporter ProgressReporter, n uint64, threshold int) (*big.Int, error) {
 	if n == 0 {
 		return big.NewInt(0), nil
 	}
 
 	// Récupération de l'état (matrices et entiers temporaires) depuis le pool.
-	s := getMatrixState()
-	defer putMatrixState(s)
+	s := acquireMatrixState()
+	defer releaseMatrixState(s)
 
 	k := n - 1 // On a besoin de Q^(n-1) pour trouver F(n).
 	numBits := bits.Len64(k)
@@ -151,8 +151,8 @@ func (me *MatrixExponentiation) CalculateCore(ctx context.Context, progressChan 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if progressChan != nil {
-			reportProgress(progressChan, calcIndex, float64(i)*invNumBits)
+		if reporter != nil {
+			reporter(float64(i) * invNumBits)
 		}
 
 		// ÉTAPE 1: MULTIPLICATION CONDITIONNELLE
@@ -175,7 +175,7 @@ func (me *MatrixExponentiation) CalculateCore(ctx context.Context, progressChan 
 		}
 	}
 
-	reportProgress(progressChan, calcIndex, 1.0)
+	// La progression finale (1.0) est garantie par le décorateur (FibCalculator).
 	// Le résultat F(n) se trouve dans l'élément en haut à gauche de la matrice Q^(n-1).
 	// On retourne une copie pour garantir l'isolation par rapport au pool.
 	return new(big.Int).Set(s.res.a), nil
