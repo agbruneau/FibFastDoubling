@@ -16,6 +16,7 @@ Le code est abondamment commenté pour servir de guide, expliquant les décision
 *   **Parallélisme Optimisé :** Exploite les processeurs multi-cœurs pour accélérer les multiplications coûteuses de grands nombres.
 *   **Optimisation Mémoire "Zéro-Allocation" :** Utilise des pools d'objets (`sync.Pool`) pour minimiser la pression sur le Garbage Collector (GC) et atteindre des performances maximales.
 *   **Arrêt Propre (Graceful Shutdown) :** Gère les signaux du système (ex: `Ctrl+C`) pour s'arrêter proprement sans laisser de goroutines orphelines.
+*   **Mode de Calibration Automatique :** Trouve et recommande le meilleur réglage de performance pour le parallélisme sur la machine de l'utilisateur.
 *   **Interface en Ligne de Commande Robuste :** Validation des arguments, messages d'erreur clairs et codes de sortie standardisés.
 
 ## Concepts Académiques et d'Ingénierie
@@ -89,6 +90,7 @@ L'exécutable `fibcalc` peut être utilisé avec plusieurs options.
 | `-algo`       | L'algorithme à utiliser. Options : `fast`, `matrix`, ou `all` pour comparer.                             | `all`         |
 | `-timeout`    | Délai maximum d'exécution (ex: `10s`, `5m`, `1h`).                                                       | `5m`          |
 | `-threshold`  | Seuil (en bits) pour activer la multiplication parallèle dans les algorithmes.                           | `2048`        |
+| `--calibrate` | Lance le mode de calibration pour trouver le meilleur seuil pour votre machine. Ignore les autres calculs. | `false`       |
 | `-v`, `-verbose`| Affiche le résultat complet du nombre de Fibonacci (peut être très long). Par défaut, il est tronqué.    | `false`       |
 | `-h`, `-help` | Affiche l'aide.                                                                                          |               |
 
@@ -107,6 +109,11 @@ L'exécutable `fibcalc` peut être utilisé avec plusieurs options.
 3.  **Calculer F(1,000,000) avec l'algorithme matriciel et afficher le résultat complet :**
     ```bash
     ./fibcalc -n 1000000 -algo matrix -v
+    ```
+
+4.  **Trouver le meilleur réglage de performance pour votre machine :**
+    ```bash
+    ./fibcalc --calibrate
     ```
 
 ## Licence

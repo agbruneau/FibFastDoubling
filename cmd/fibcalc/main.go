@@ -74,6 +74,7 @@ type AppConfig struct {
 	Timeout   time.Duration
 	Algo      string
 	Threshold int
+	Calibrate bool
 }
 
 // Validate vérifie la validité sémantique de la configuration.
@@ -169,6 +170,7 @@ func parseConfig(programName string, args []string, errorWriter io.Writer) (AppC
 	fs.DurationVar(&config.Timeout, "timeout", 5*time.Minute, "Délai maximum d'exécution (ex: 30s, 1m).")
 	fs.StringVar(&config.Algo, "algo", "all", algoHelp)
 	fs.IntVar(&config.Threshold, "threshold", fibonacci.DefaultParallelThreshold, "Seuil (en bits) pour activer la multiplication parallèle.")
+	fs.BoolVar(&config.Calibrate, "calibrate", false, "Exécute le mode de calibration pour trouver le meilleur seuil de parallélisme.")
 
 	if err := fs.Parse(args); err != nil {
 		return AppConfig{}, err
@@ -193,8 +195,105 @@ type CalculationResult struct {
 	Err      error
 }
 
+// runCalibration exécute une série de benchmarks pour trouver le seuil de parallélisme optimal.
+func runCalibration(ctx context.Context, config AppConfig, out io.Writer) int {
+	fmt.Fprintln(out, "--- Mode Calibration : Recherche du Seuil de Parallélisme Optimal ---")
+
+	// On utilise un N fixe, assez grand pour que le parallélisme soit significatif.
+	const calibrationN = 10_000_000
+	// On ne teste que l'algorithme qui bénéficie du parallélisme.
+	calculator := calculatorRegistry["fast"]
+	if calculator == nil {
+		fmt.Fprintln(out, "Erreur : L'algorithme 'fast' est requis pour la calibration mais n'a pas été trouvé.")
+		return ExitErrorGeneric
+	}
+
+	// Liste des seuils (en bits) à tester.
+	thresholdsToTest := []int{0, 256, 512, 1024, 2048, 4096, 8192, 16384}
+	// Le seuil 0 désactive le parallélisme, servant de ligne de base.
+
+	type calibrationResult struct {
+		Threshold int
+		Duration  time.Duration
+		Err       error
+	}
+
+	results := make([]calibrationResult, 0, len(thresholdsToTest))
+	bestDuration := time.Duration(1<<63 - 1) // Max duration
+	bestThreshold := 0
+
+	for _, threshold := range thresholdsToTest {
+		// Vérifier si l'utilisateur a annulé l'opération (Ctrl+C).
+		if ctx.Err() != nil {
+			fmt.Fprintln(out, "\nCalibration annulée.")
+			return ExitErrorCanceled
+		}
+
+		thresholdLabel := fmt.Sprintf("%d bits", threshold)
+		if threshold == 0 {
+			thresholdLabel = "Désactivé"
+		}
+		fmt.Fprintf(out, "Test du seuil : %-10s...", thresholdLabel)
+
+		startTime := time.Now()
+		// Le canal de progression est nil car non nécessaire pour la calibration.
+		_, err := calculator.Calculate(ctx, nil, 0, calibrationN, threshold)
+		duration := time.Since(startTime)
+
+		if err != nil {
+			fmt.Fprintf(out, " ❌ Échec (%v)\n", err)
+			results = append(results, calibrationResult{threshold, 0, err})
+			// Si le contexte a été annulé pendant le calcul, on s'arrête.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return handleCalculationError(err, duration, config.Timeout, out)
+			}
+			continue
+		}
+
+		fmt.Fprintf(out, " ✅ Succès (Durée: %s)\n", duration)
+		results = append(results, calibrationResult{threshold, duration, nil})
+
+		if duration < bestDuration {
+			bestDuration = duration
+			bestThreshold = threshold
+		}
+	}
+
+	fmt.Fprintln(out, "\n--- Résultats de la Calibration ---")
+	fmt.Fprintf(out, "  %-10s │ %s\n", "Seuil", "Durée")
+	fmt.Fprintf(out, "  %s┼%s\n", strings.Repeat("─", 12), strings.Repeat("─", 20))
+
+	for _, res := range results {
+		thresholdLabel := fmt.Sprintf("%d bits", res.Threshold)
+		if res.Threshold == 0 {
+			thresholdLabel = "Désactivé"
+		}
+		durationStr := "N/A"
+		if res.Err == nil {
+			durationStr = res.Duration.String()
+		}
+
+		highlight := ""
+		if res.Threshold == bestThreshold && res.Err == nil {
+			highlight = " (Meilleur)"
+		}
+		fmt.Fprintf(out, "  %-10s │ %s%s\n", thresholdLabel, durationStr, highlight)
+	}
+
+	fmt.Fprintln(out, "\n-----------------------------------")
+	fmt.Fprintf(out, "✅ Recommandation : Pour des performances optimales sur cette machine,\n")
+	fmt.Fprintf(out, "   utilisez le flag : --threshold %d\n", bestThreshold)
+	fmt.Fprintln(out, "-----------------------------------")
+
+	return ExitSuccess
+}
+
 // run contient la logique principale de l'application. Elle est testable.
 func run(ctx context.Context, config AppConfig, out io.Writer) int {
+	if config.Calibrate {
+		return runCalibration(ctx, config, out)
+	}
+
 	// --- GESTION DU CONTEXTE ET DE L'ANNULATION ---
 	// EXPLICATION ACADÉMIQUE : Composition des Contextes pour un Arrêt Propre (Graceful Shutdown)
 	// Le `context` de Go est un mécanisme puissant pour propager des signaux d'annulation.
