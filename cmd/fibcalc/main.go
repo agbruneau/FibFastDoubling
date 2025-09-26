@@ -304,7 +304,6 @@ func executeCalculations(ctx context.Context, calculators []fibonacci.Calculator
 
 // analyzeComparisonResults analyse les résultats en mode "all".
 func analyzeComparisonResults(results []CalculationResult, config AppConfig, out io.Writer) int {
-	fmt.Fprintln(out, "\n--- Résultats de la Comparaison (Benchmark & Validation) ---")
 	sort.Slice(results, func(i, j int) bool {
 		// Tri complexe pour un affichage lisible : succès d'abord, puis par durée.
 		if (results[i].Err == nil) != (results[j].Err == nil) {
@@ -316,20 +315,71 @@ func analyzeComparisonResults(results []CalculationResult, config AppConfig, out
 	var firstValidResult *big.Int
 	var firstError error
 	successCount := 0
-	for _, res := range results {
-		status := "Succès"
+
+	// --- Préparation pour un affichage tabulaire amélioré ---
+	// Initialiser les largeurs avec les en-têtes de colonnes comme base
+	col1Width := len("Algorithme")
+	col2Width := len("Durée")
+
+	// Structure pour stocker les données formatées avant l'affichage
+	type displayRow struct {
+		Name     string
+		Duration string
+		Status   string
+	}
+	displayData := make([]displayRow, len(results))
+
+	// Première passe : formater les données et calculer les largeurs de colonnes
+	for i, res := range results {
+		var status string
 		if res.Err != nil {
-			status = fmt.Sprintf("Échec (%s)", res.Err.Error())
+			status = fmt.Sprintf("❌ Échec (%v)", res.Err)
 			if firstError == nil {
 				firstError = res.Err
 			}
 		} else {
+			status = "✅ Succès"
 			successCount++
 			if firstValidResult == nil {
 				firstValidResult = res.Result
 			}
 		}
-		fmt.Fprintf(out, "  - %-65s | Durée: %-15s | Statut: %s\n", res.Name, res.Duration.String(), status)
+
+		displayData[i] = displayRow{
+			Name:     res.Name,
+			Duration: res.Duration.String(),
+			Status:   status,
+		}
+
+		// Mettre à jour les largeurs maximales
+		if len(displayData[i].Name) > col1Width {
+			col1Width = len(displayData[i].Name)
+		}
+		if len(displayData[i].Duration) > col2Width {
+			col2Width = len(displayData[i].Duration)
+		}
+	}
+
+	// --- Affichage des résultats ---
+	fmt.Fprintln(out, "\n--- Résultats de la Comparaison (Benchmark & Validation) ---")
+
+	// Définir le format des lignes avec des largeurs dynamiques et un padding
+	rowFormat := fmt.Sprintf("  %%-%ds │ %%-%ds │ %%s\n", col1Width, col2Width)
+
+	// Afficher l'en-tête du tableau, avec un espacement vertical
+	fmt.Fprintf(out, "\n"+rowFormat, "Algorithme", "Durée", "Statut")
+
+	// Afficher la ligne de séparation
+	separator := fmt.Sprintf("  %s┼%s┼%s",
+		strings.Repeat("─", col1Width+1),
+		strings.Repeat("─", col2Width+2),
+		strings.Repeat("─", 45), // Ligne assez longue pour la colonne statut
+	)
+	fmt.Fprintln(out, separator)
+
+	// Afficher les lignes de données
+	for _, data := range displayData {
+		fmt.Fprintf(out, rowFormat, data.Name, data.Duration, data.Status)
 	}
 
 	if successCount == 0 {
