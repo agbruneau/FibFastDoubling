@@ -1,4 +1,3 @@
-//
 // MODULE ACADÉMIQUE : POINT D'ENTRÉE ET ORCHESTRATION (COMPOSITION ROOT)
 //
 // OBJECTIF PÉDAGOGIQUE :
@@ -18,7 +17,6 @@
 //     de Go pour répondre aux signaux de l'OS (ex: Ctrl+C) et aux timeouts.
 //  5. INJECTION DE DÉPENDANCES : La fonction `run` reçoit ses dépendances (contexte,
 //     configuration, writer), ce qui la rend indépendante de l'état global et facile à tester.
-//
 package main
 
 import (
