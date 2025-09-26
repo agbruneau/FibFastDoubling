@@ -1,7 +1,23 @@
-// EXPLICATION ACADÉMIQUE :
-// Ce fichier est le cœur architectural du projet. Il définit les contrats (interfaces),
-// implémente les optimisations fondamentales (LUT, Object Pooling) et utilise des patrons
-// de conception avancés (Décorateur, Adaptateur) ainsi que les Generics pour la sécurité de typage.
+//
+// MODULE ACADÉMIQUE : ARCHITECTURE DU CALCULATEUR ET OPTIMISATIONS
+//
+// OBJECTIF PÉDAGOGIQUE :
+// Ce fichier est le cœur architectural du module `fibonacci`. Il ne contient pas d'algorithme
+// de calcul principal, mais définit les "règles du jeu" et fournit des optimisations
+// fondamentales. Il illustre des concepts avancés d'ingénierie logicielle :
+//  1. CONTRATS ET ABSTRACTIONS : Définition des interfaces (`Calculator`, `coreCalculator`)
+//     qui découplent l'orchestrateur des implémentations d'algorithmes (Principe de
+//     Ségrégation des Interfaces).
+//  2. PATRONS DE CONCEPTION : Application pratique des patrons Décorateur et Adaptateur
+//     pour ajouter des fonctionnalités et adapter les interfaces de manière modulaire.
+//  3. OPTIMISATION MÉMOIRE ("ZÉRO-ALLOCATION") : Utilisation de `sync.Pool` pour créer
+//     des pools d'objets réutilisables, réduisant drastiquement la pression sur le
+//     Garbage Collector (GC) de Go, une technique essentielle pour la haute performance.
+//  4. SÉCURITÉ DE TYPAGE AVEC LES GÉNÉRIQUES : Utilisation des génériques de Go (1.18+)
+//     pour créer des wrappers de pool typés, éliminant les assertions de type risquées.
+//  5. GESTION D'ÉTAT ET IMMUABILITÉ : Démonstration des bonnes pratiques pour gérer
+//     l'état des objets mis en pool et garantir l'immuabilité des données partagées (LUT).
+//
 package fibonacci
 
 import (
@@ -11,107 +27,112 @@ import (
 )
 
 const (
-	// MaxFibUint64 est F(93). C'est le dernier indice dont le résultat tient dans un uint64.
-	// Limite pour l'optimisation par Lookup Table (O(1)).
+	// MaxFibUint64 correspond à F(93), le dernier nombre de Fibonacci qui peut être
+	// stocké dans un `uint64`. C'est la limite pour l'optimisation O(1) via la table de consultation (LUT).
 	MaxFibUint64 = 93
 
-	// DefaultParallelThreshold (en bits) définit le seuil pour activer la multiplication
-	// parallèle. En dessous, le coût de synchronisation des goroutines dépasse le gain.
+	// DefaultParallelThreshold (en bits) est le seuil au-delà duquel les multiplications
+	// en parallèle sont activées. En dessous, le coût de synchronisation des goroutines
+	// est supérieur au gain de performance du calcul parallèle.
 	DefaultParallelThreshold = 2048
 )
 
-// ProgressUpdate est la structure communiquée via canal pour l'affichage.
+// ProgressUpdate est la structure de données (DTO) utilisée pour communiquer l'état
+// de la progression d'un calcul via un canal, du producteur (calculateur) au consommateur (UI).
 type ProgressUpdate struct {
-	CalculatorIndex int     // Identifiant du calculateur (pour le mode parallèle)
-	Value           float64 // Progression de 0.0 à 1.0
+	CalculatorIndex int     // Identifie quel calculateur (en mode parallèle) a envoyé la mise à jour.
+	Value           float64 // Progression normalisée entre 0.0 et 1.0.
 }
 
-// [REFACTORING MAJEUR] : Ségrégation des Interfaces
-
-// ProgressReporter est une fonction de rappel (callback) fournie aux algorithmes
-// de calcul pour signaler leur progression (0.0 à 1.0) sans connaître les détails
-// d'implémentation de l'affichage (canaux, index).
+// ProgressReporter définit un type fonctionnel (callback) simple pour rapporter la progression.
+// En fournissant cette abstraction aux algorithmes de cœur, on les découple complètement
+// du mécanisme de communication (ici, les canaux). Ils n'ont besoin de savoir que "comment
+// rapporter", pas "à qui ou via quel moyen".
 type ProgressReporter func(progress float64)
 
 // === PATRONS DE CONCEPTION : INTERFACE, DÉCORATEUR & ADAPTATEUR ===
 
-// Calculator définit l'interface publique (API) pour tous les calculateurs.
+// Calculator est l'interface PUBLIQUE du module. C'est le seul point d'entrée que
+// l'orchestrateur (`main.go`) connaît.
 type Calculator interface {
-	// Calculate orchestre le calcul. La signature publique reste inchangée pour la compatibilité.
 	Calculate(ctx context.Context, progressChan chan<- ProgressUpdate, calcIndex int, n uint64, threshold int) (*big.Int, error)
 	Name() string
 }
 
-// coreCalculator est une interface interne représentant un algorithme "pur".
+// coreCalculator est une interface INTERNE, non exportée. Elle représente le contrat
+// pour un algorithme de calcul "pur". Elle est volontairement simple et ne dépend pas
+// des détails d'orchestration comme les canaux ou les index.
+// C'est un exemple du Principe de Ségrégation des Interfaces (le 'I' de SOLID).
 type coreCalculator interface {
-	// CalculateCore effectue le calcul mathématique. Elle est agnostique des détails d'orchestration.
-	// [REFACTORING] Signature modifiée pour utiliser ProgressReporter.
 	CalculateCore(ctx context.Context, reporter ProgressReporter, n uint64, threshold int) (*big.Int, error)
 	Name() string
 }
 
-// FibCalculator implémente l'interface `Calculator`.
-// EXPLICATION ACADÉMIQUE : Patrons Décorateur et Adaptateur
-//  1. DÉCORATEUR : Il enveloppe un `coreCalculator` et ajoute des fonctionnalités
-//     transversales (ici, l'optimisation "fast path" avec la LUT).
-//  2. ADAPTATEUR : Il adapte l'interface abstraite `ProgressReporter` (attendue par le cœur)
-//     à l'interface concrète `chan<- ProgressUpdate` (utilisée par l'orchestrateur).
+// FibCalculator est une structure qui implémente l'interface `Calculator`.
+// EXPLICATION ACADÉMIQUE : Application des Patrons Décorateur et Adaptateur
+// Cette structure est une implémentation élégante de deux patrons de conception :
+//  1. DÉCORATEUR : `FibCalculator` "enveloppe" un `coreCalculator`. Il ajoute des
+//     fonctionnalités communes (appelées "cross-cutting concerns") comme l'optimisation
+//     via la table de consultation (LUT) et la garantie que la progression atteigne 100%.
+//     Cela évite de dupliquer cette logique dans chaque algorithme.
+//  2. ADAPTATEUR : Sa méthode `Calculate` adapte l'interface attendue par l'orchestrateur
+//     (avec un `chan<- ProgressUpdate`) à l'interface plus simple requise par le
+//     `coreCalculator` (un `ProgressReporter`).
 type FibCalculator struct {
 	core coreCalculator
 }
 
-// NewCalculator est une "factory function" qui crée et configure le décorateur.
+// NewCalculator est une "factory function" qui construit le décorateur autour d'un noyau.
 func NewCalculator(core coreCalculator) Calculator {
 	if core == nil {
-		// Panic est approprié ici car c'est une erreur de programmation (Fail-Fast).
 		panic("fibonacci: NewCalculator a reçu un coreCalculator nil")
 	}
 	return &FibCalculator{core: core}
 }
 
-// Name délègue l'appel à l'objet enveloppé.
+// Name délègue simplement l'appel à l'objet enveloppé.
 func (c *FibCalculator) Name() string {
 	return c.core.Name()
 }
 
-// Calculate est le cœur du décorateur et de l'adaptateur.
+// Calculate est la méthode centrale qui orchestre les rôles de décorateur et d'adaptateur.
 func (c *FibCalculator) Calculate(ctx context.Context, progressChan chan<- ProgressUpdate, calcIndex int, n uint64, threshold int) (*big.Int, error) {
 
-	// --- Rôle d'ADAPTATEUR : Création du ProgressReporter concret ---
-	// On crée une closure qui capture `calcIndex` et `progressChan` et implémente la logique non bloquante.
+	// --- Rôle d'ADAPTATEUR : Création du ProgressReporter ---
+	// La closure `reporter` capture les détails d'implémentation (`progressChan`, `calcIndex`)
+	// et expose une fonction simple `func(float64)`.
 	reporter := func(progress float64) {
 		if progressChan == nil {
 			return
 		}
-
-		// Assurer que la progression est bornée à 1.0.
-		if progress > 1.0 {
+		if progress > 1.0 { // Bornage de sécurité.
 			progress = 1.0
 		}
-
 		update := ProgressUpdate{CalculatorIndex: calcIndex, Value: progress}
 
-		// EXPLICATION ACADÉMIQUE : Envoi non-bloquant (`select` avec `default`)
-		// On priorise la vitesse du calcul sur la garantie de l'affichage.
-		// Si le canal est plein (l'affichage est lent), on abandonne la mise à jour
-		// (`default`) au lieu de bloquer le calcul.
+		// EXPLICATION ACADÉMIQUE : Envoi Non-Bloquant sur un Canal
+		// Le `select` avec une clause `default` permet un envoi non-bloquant.
+		// DÉCISION DE CONCEPTION : On priorise la performance du calcul. Si le canal
+		// de progression est plein (parce que l'UI est lente à le consommer),
+		// on préfère abandonner cette mise à jour de progression (`default`) plutôt
+		// que de bloquer la goroutine de calcul en attendant que l'UI soit prête.
 		select {
-		case progressChan <- update:
-		default:
-			// Le canal est plein ou non prêt. On ignore cette mise à jour.
+		case progressChan <- update: // Tente d'envoyer.
+		default: // Abandonne si le canal n'est pas immédiatement prêt.
 		}
 	}
 
 	// --- Rôle de DÉCORATEUR : Optimisation "Fast Path" (O(1)) ---
+	// Avant de lancer un calcul coûteux, on vérifie si le résultat est déjà connu.
 	if n <= MaxFibUint64 {
-		reporter(1.0) // On signale la fin immédiate.
+		reporter(1.0) // Le calcul est "instantané", on signale 100% de progression.
 		return lookupSmall(n), nil
 	}
 
-	// Si le cas est complexe (O(log n)), on délègue au calculateur de cœur.
+	// Délégation à l'algorithme de cœur pour les cas complexes.
 	result, err := c.core.CalculateCore(ctx, reporter, n, threshold)
 
-	// Safety Net : Garantir que 100% est rapporté en cas de succès.
+	// Filet de sécurité du décorateur : s'assurer que 100% est bien rapporté en cas de succès.
 	if err == nil && result != nil {
 		reporter(1.0)
 	}
@@ -119,11 +140,10 @@ func (c *FibCalculator) Calculate(ctx context.Context, progressChan chan<- Progr
 	return result, err
 }
 
-// --- OPTIMISATION : LOOKUP TABLE (LUT) PRÉCALCULÉE ---
-
+// --- OPTIMISATION : TABLE DE CONSULTATION (LOOKUP TABLE, LUT) ---
 var fibLookupTable [MaxFibUint64 + 1]*big.Int
 
-// init() est exécutée automatiquement à l'importation du package.
+// `init` est utilisée pour pré-calculer les petites valeurs de Fibonacci au démarrage.
 func init() {
 	var a, b uint64 = 0, 1
 	for i := uint64(0); i <= MaxFibUint64; i++ {
@@ -132,177 +152,139 @@ func init() {
 	}
 }
 
-// lookupSmall récupère une valeur de la table de manière sécurisée.
+// lookupSmall récupère une valeur de la LUT.
 func lookupSmall(n uint64) *big.Int {
-	// EXPLICATION ACADÉMIQUE : Immuabilité et Sécurité
-	// CRUCIAL : On retourne une NOUVELLE copie (`new(big.Int).Set(...)`).
-	// Si on retournait directement le pointeur de la table, l'appelant pourrait
-	// modifier la table globale. Cette copie garantit l'immuabilité de la LUT.
+	// EXPLICATION ACADÉMIQUE : Garantie d'Immuabilité
+	// CRUCIAL : On retourne une NOUVELLE copie (`new(big.Int).Set(...)`) de la valeur.
+	// `big.Int` est un type pointeur. Si on retournait `fibLookupTable[n]` directement,
+	// le code appelant pourrait modifier la valeur dans la table globale partagée,
+	// ce qui est une source de bugs extrêmement difficiles à tracer. Cette copie garantit
+	// que la LUT reste immuable.
 	return new(big.Int).Set(fibLookupTable[n])
 }
 
-// === OPTIMISATION AVANCÉE : POOLING D'OBJETS (ZÉRO-ALLOCATION) ===
+// === OPTIMISATION AVANCÉE : POOLING D'OBJETS ("ZÉRO-ALLOCATION") ===
 
-// EXPLICATION ACADÉMIQUE : `sync.Pool` et Garbage Collector (GC)
-// `sync.Pool` permet de réutiliser les objets temporaires (`big.Int`) au lieu de les
-// allouer/libérer constamment, réduisant drastiquement la pression sur le GC.
+// EXPLICATION ACADÉMIQUE : Le Problème du Garbage Collector (GC)
+// Les calculs avec `math/big` génèrent un grand nombre d'objets intermédiaires. Chaque
+// multiplication ou addition crée de nouveaux `big.Int`. Pour des calculs intensifs,
+// cela met une pression énorme sur le GC, qui doit constamment scanner et nettoyer la
+// mémoire, provoquant des pauses qui dégradent les performances.
+//
+// SOLUTION : `sync.Pool`
+// `sync.Pool` est un cache d'objets temporaires géré par le runtime. En réutilisant
+// des objets (`Get` et `Put`), on évite les cycles allocation/libération, ce qui
+// réduit la charge du GC et peut amener à des performances "zéro-allocation"
+// dans les boucles de calcul critiques.
 
-// [REFACTORING MAJEUR] : Utilisation de Generics (Go 1.18+) pour un Pool sécurisé.
-
-// Pool[T] est un wrapper générique autour de sync.Pool pour une sécurité de typage.
+// Pool[T] est un wrapper générique et typé autour de `sync.Pool`.
+// L'utilisation des génériques (Go 1.18+) apporte la sécurité de type, évitant les
+// assertions de type manuelles (`x.(T)`) qui sont source d'erreurs à l'exécution.
 type Pool[T any] struct {
 	pool sync.Pool
 }
 
-// NewPool crée un nouveau Pool typé avec une fonction de création.
 func NewPool[T any](newFunc func() T) *Pool[T] {
 	return &Pool[T]{
 		pool: sync.Pool{
-			// L'assertion de type est gérée ici lors de la création.
 			New: func() interface{} { return newFunc() },
 		},
 	}
 }
+func (p *Pool[T]) Get() T { return p.pool.Get().(T) }
+func (p *Pool[T]) Put(x T) { p.pool.Put(x) }
 
-// Get récupère un élément du pool de manière typée.
-func (p *Pool[T]) Get() T {
-	// L'assertion de type est encapsulée ici lors de la récupération.
-	return p.pool.Get().(T)
-}
-
-// Put remet un élément dans le pool.
-func (p *Pool[T]) Put(x T) {
-	p.pool.Put(x)
-}
-
-// [REFACTORING MAJEUR] : Abstraction de la réinitialisation.
-
-// Resettable définit un objet qui peut être réinitialisé à un état initial propre.
+// Resettable définit un contrat pour les objets qui peuvent être mis en pool.
+// Un objet doit pouvoir être réinitialisé à un état propre avant d'être réutilisé.
 type Resettable interface {
 	Reset()
 }
 
-// acquireFromPool récupère un objet du pool et garantit qu'il est réinitialisé.
+// acquireFromPool récupère un objet du pool et garantit sa réinitialisation.
 func acquireFromPool[T Resettable](p *Pool[T]) T {
 	item := p.Get()
-	// EXPLICATION CRUCIALE : Réinitialisation de l'état
-	// Les objets du pool contiennent des données "sales". La réinitialisation est obligatoire.
+	// EXPLICATION CRUCIALE : Les objets d'un pool sont "sales" !
+	// Ils contiennent les données de leur dernière utilisation. Il est absolument
+	// obligatoire de les réinitialiser avant toute nouvelle utilisation pour éviter
+	// la corruption de données.
 	item.Reset()
 	return item
 }
 
 // releaseToPool retourne un objet au pool.
 func releaseToPool[T any](p *Pool[T], item T) {
-	// [BONIFICATION] S'assurer qu'on ne met pas un objet nil (si T est un type pointeur) dans le pool.
-	if interface{}(item) != nil {
-		p.Put(item)
-	}
+	// Vérification pour éviter de mettre un pointeur `nil` dans le pool.
+	if v, ok := (interface{})(item).(*big.Int); ok && v == nil { return }
+	if v, ok := (interface{})(item).(*calculationState); ok && v == nil { return }
+	if v, ok := (interface{})(item).(*matrixState); ok && v == nil { return }
+	p.Put(item)
 }
 
-// === Structures et Pools pour Fast Doubling ===
 
-// calculationState regroupe les variables pour l'algorithme Fast Doubling.
+// --- DÉFINITION DES OBJETS MIS EN POOL ET DE LEURS POOLS ---
+
+// calculationState regroupe toutes les variables temporaires pour l'algorithme Fast Doubling.
+// Mettre en pool la structure entière est plus simple et efficace que de gérer des pools
+// pour chaque `big.Int` individuellement.
 type calculationState struct {
-	f_k, f_k1      *big.Int // F(k) et F(k+1)
-	t1, t2, t3, t4 *big.Int // Temporaires
+	f_k, f_k1, t1, t2, t3, t4 *big.Int
 }
 
-// Implémentation de Resettable.
+// Reset implémente l'interface `Resettable`.
 func (s *calculationState) Reset() {
-	// Réinitialisation à l'état initial : F(0)=0, F(1)=1.
-	s.f_k.SetInt64(0)
-	s.f_k1.SetInt64(1)
-	// OPTIMISATION : Les temporaires (t1-t4) n'ont pas besoin d'être réinitialisés car
-	// ils seront systématiquement écrasés (.Mul(), .Add(), etc.) avant d'être lus.
+	s.f_k.SetInt64(0)  // F(k)   -> F(0) = 0
+	s.f_k1.SetInt64(1) // F(k+1) -> F(1) = 1
+	// OPTIMISATION : Les temporaires (t1-t4) n'ont pas besoin d'être remis à zéro car
+	// ils sont toujours la destination d'une opération (`.Mul`, `.Add`) qui écrase
+	// complètement leur contenu avant toute lecture.
 }
 
-// Initialisation du pool générique.
 var statePool = NewPool(func() *calculationState {
 	return &calculationState{
-		f_k: new(big.Int), f_k1: new(big.Int),
-		t1: new(big.Int), t2: new(big.Int),
-		t3: new(big.Int), t4: new(big.Int),
+		f_k: new(big.Int), f_k1: new(big.Int), t1: new(big.Int),
+		t2: new(big.Int), t3: new(big.Int), t4: new(big.Int),
 	}
 })
 
-// Fonctions d'assistance simplifiées grâce aux Generics et à Resettable.
-// Renommage sémantique : acquire/release.
-func acquireState() *calculationState {
-	return acquireFromPool(statePool)
-}
+func acquireState() *calculationState { return acquireFromPool(statePool) }
+func releaseState(s *calculationState) { releaseToPool(statePool, s) }
 
-func releaseState(s *calculationState) {
-	releaseToPool(statePool, s)
-}
 
-// === Structures et Pools pour Matrix Exponentiation ===
-
-// matrix représente une matrice 2x2 [[a, b], [c, d]] de big.Int.
-type matrix struct {
-	a, b, c, d *big.Int
-}
+// matrix représente une matrice 2x2.
+type matrix struct { a, b, c, d *big.Int }
 
 func newMatrix() *matrix {
 	return &matrix{new(big.Int), new(big.Int), new(big.Int), new(big.Int)}
 }
-
-// Set copie les valeurs d'une autre matrice.
 func (m *matrix) Set(other *matrix) {
-	m.a.Set(other.a)
-	m.b.Set(other.b)
-	m.c.Set(other.c)
-	m.d.Set(other.d)
+	m.a.Set(other.a); m.b.Set(other.b); m.c.Set(other.c); m.d.Set(other.d)
 }
-
-// SetIdentity configure la matrice en Identité I = [[1, 0], [0, 1]].
 func (m *matrix) SetIdentity() {
-	m.a.SetInt64(1)
-	m.b.SetInt64(0)
-	m.c.SetInt64(0)
-	m.d.SetInt64(1)
+	m.a.SetInt64(1); m.b.SetInt64(0); m.c.SetInt64(0); m.d.SetInt64(1)
 }
-
-// SetBaseQ configure la matrice de transition Q = [[1, 1], [1, 0]].
 func (m *matrix) SetBaseQ() {
-	m.a.SetInt64(1)
-	m.b.SetInt64(1)
-	m.c.SetInt64(1)
-	m.d.SetInt64(0)
+	m.a.SetInt64(1); m.b.SetInt64(1); m.c.SetInt64(1); m.d.SetInt64(0)
 }
 
-// matrixState regroupe les variables pour l'algorithme Matrix Exponentiation.
+// matrixState regroupe toutes les variables pour l'algorithme d'exponentiation matricielle.
 type matrixState struct {
-	res        *matrix // Matrice résultat (accumulateur)
-	p          *matrix // Matrice de puissance (power)
-	tempMatrix *matrix // Matrice temporaire
-	// Temporaires pour les calculs intermédiaires (8 pour multiplication 2x2 standard).
+	res, p, tempMatrix             *matrix
 	t1, t2, t3, t4, t5, t6, t7, t8 *big.Int
 }
 
-// Implémentation de Resettable.
+// Reset implémente l'interface `Resettable`.
 func (s *matrixState) Reset() {
-	// Réinitialisation pour l'exponentiation binaire :
-	s.res.SetIdentity() // Accumulateur commence à I.
-	s.p.SetBaseQ()      // Puissance commence à Q.
-	// Les temporaires (tempMatrix, t1-t8) n'ont pas besoin d'être réinitialisés.
+	s.res.SetIdentity() // L'accumulateur de résultat commence à la matrice identité.
+	s.p.SetBaseQ()      // La matrice de puissance commence à la matrice de base Q.
 }
 
-// Initialisation du pool générique.
 var matrixStatePool = NewPool(func() *matrixState {
 	return &matrixState{
-		res:        newMatrix(),
-		p:          newMatrix(),
-		tempMatrix: newMatrix(),
-		t1:         new(big.Int), t2: new(big.Int), t3: new(big.Int), t4: new(big.Int),
+		res: newMatrix(), p: newMatrix(), tempMatrix: newMatrix(),
+		t1: new(big.Int), t2: new(big.Int), t3: new(big.Int), t4: new(big.Int),
 		t5: new(big.Int), t6: new(big.Int), t7: new(big.Int), t8: new(big.Int),
 	}
 })
 
-// Fonctions d'assistance simplifiées.
-func acquireMatrixState() *matrixState {
-	return acquireFromPool(matrixStatePool)
-}
-
-func releaseMatrixState(s *matrixState) {
-	releaseToPool(matrixStatePool, s)
-}
+func acquireMatrixState() *matrixState { return acquireFromPool(matrixStatePool) }
+func releaseMatrixState(s *matrixState) { releaseToPool(matrixStatePool, s) }

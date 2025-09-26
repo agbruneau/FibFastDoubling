@@ -1,8 +1,29 @@
-// EXPLICATION ACADÉMIQUE :
-// Le package `cli` (Command-Line Interface) implémente la couche de présentation.
-// Il est responsable de l'interaction avec l'utilisateur dans le terminal (affichage de la
-// progression, formatage des résultats). Le séparer de la logique métier (`fibonacci`)
-// respecte le principe de "Séparation des préoccupations", augmentant la modularité et la testabilité.
+//
+// MODULE ACADÉMIQUE : COUCHE DE PRÉSENTATION (UI) EN GO
+//
+// OBJECTIF PÉDAGOGIQUE :
+// Ce module, `cli`, illustre la conception d'une interface utilisateur en ligne de commande (CLI)
+// robuste et performante en Go. Il met en lumière des techniques essentielles pour gérer
+// l'affichage concurrentiel, l'interaction non bloquante, et le formatage de données complexes.
+//
+// CONCEPTS CLÉS DÉMONTRÉS :
+//  1. SÉPARATION DES PRÉOCCUPATIONS : L'UI (`cli`) est totalement découplée de la logique
+//     métier (`fibonacci`). Elle communique uniquement via des structures de données
+//     bien définies (`fibonacci.ProgressUpdate`) et des canaux, un principe fondamental
+//     pour la modularité et la testabilité.
+//  2. MODÈLE PRODUCTEUR/CONSOMMATEUR : L'orchestrateur (`main.go`) et les calculateurs
+//     sont les "Producteurs" de messages de progression. La fonction `DisplayAggregateProgress`
+//     est le "Consommateur", s'exécutant dans sa propre goroutine pour traiter ces messages
+//     de manière asynchrone.
+//  3. CONCURRENCE SÉRIALISÉE : L'accès à l'état partagé (`ProgressState`) est rendu "thread-safe"
+//     sans utiliser de mutex explicite. La goroutine unique du consommateur garantit que
+//     toutes les mises à jour de l'état sont traitées séquentiellement.
+//  4. GESTION DE L'AFFICHAGE (RATE LIMITING) : L'utilisation d'un `time.Ticker` pour limiter
+//     la fréquence de rafraîchissement du terminal est une pratique cruciale pour éviter
+//     le scintillement ("flickering") et réduire la charge CPU inutile.
+//  5. MANIPULATION DU TERMINAL : L'usage de séquences d'échappement ANSI (`\r`, `\033[K`)
+//     démontre comment créer des interfaces dynamiques et professionnelles dans un terminal.
+//
 package cli
 
 import (
@@ -16,27 +37,36 @@ import (
 	"example.com/fibcalc/internal/fibonacci"
 )
 
-// Constantes pour la configuration de l'interface utilisateur.
+// Constantes définissant le comportement et l'apparence de l'interface utilisateur.
 const (
-	// Configuration de l'affichage de la progression
-	ProgressRefreshRate = 100 * time.Millisecond // Taux de rafraîchissement (10Hz). Fluide sans surcharger le CPU.
-	ProgressBarWidth    = 40                     // Largeur visuelle de la barre de progression.
+	// ProgressRefreshRate définit la fréquence de rafraîchissement de la barre de progression.
+	// Une valeur de 100ms (10Hz) offre un bon compromis entre une animation fluide
+	// et une consommation CPU minimale. Un taux trop élevé pourrait surcharger le terminal.
+	ProgressRefreshRate = 100 * time.Millisecond
 
-	// Configuration de la troncature des résultats
-	TruncationLimit = 100 // Au-delà de cette limite, le résultat est tronqué si le mode verbose n'est pas activé.
-	DisplayEdges    = 25  // Nombre de chiffres à afficher au début et à la fin lors de la troncature.
+	// ProgressBarWidth détermine la largeur en caractères de la barre de progression.
+	ProgressBarWidth = 40
+
+	// TruncationLimit est le nombre de chiffres au-delà duquel un résultat est tronqué
+	// par défaut pour ne pas submerger l'affichage du terminal.
+	TruncationLimit = 100
+
+	// DisplayEdges spécifie combien de chiffres afficher au début et à la fin d'un nombre tronqué.
+	DisplayEdges = 25
 )
 
-// [REFACTORING MAJEUR] : Encapsulation de l'état de la progression.
-
-// ProgressState gère l'état agrégé et l'affichage de la progression.
+// ProgressState encapsule l'état complet de la progression de tous les calculs en cours.
+// Cette structure agit comme un "modèle" dans une architecture Modèle-Vue-Contrôleur (MVC) simplifiée,
+// où elle détient les données à afficher.
 type ProgressState struct {
+	// Le slice `progresses` stocke la dernière valeur de progression (0.0 à 1.0) pour chaque calculateur.
+	// L'index du slice correspond au `CalculatorIndex` reçu dans les messages.
 	progresses     []float64
 	numCalculators int
-	out            io.Writer
+	out            io.Writer // La destination de sortie (e.g., os.Stdout), injectée pour la testabilité.
 }
 
-// NewProgressState initialise l'état.
+// NewProgressState est une factory qui initialise un nouvel état de progression.
 func NewProgressState(numCalculators int, out io.Writer) *ProgressState {
 	return &ProgressState{
 		progresses:     make([]float64, numCalculators),
@@ -45,28 +75,32 @@ func NewProgressState(numCalculators int, out io.Writer) *ProgressState {
 	}
 }
 
-// Update met à jour la progression d'un calculateur spécifique de manière sécurisée.
+// Update met à jour la progression pour un calculateur spécifique.
+// Cette méthode est appelée par la goroutine du consommateur, garantissant un accès séquentiel
+// et évitant ainsi les "race conditions" sans nécessiter de verrou (mutex).
 func (ps *ProgressState) Update(index int, value float64) {
-	// Vérification des bornes pour éviter un panic si l'index est invalide.
+	// La validation des bornes est une mesure de robustesse essentielle pour prévenir
+	// un "panic: index out of range" si un index invalide était reçu.
 	if index >= 0 && index < len(ps.progresses) {
 		ps.progresses[index] = value
 	}
 }
 
-// CalculateAverage calcule la progression moyenne actuelle.
+// CalculateAverage calcule la progression moyenne de tous les calculateurs.
+// Utile pour le mode "benchmark" où plusieurs algorithmes tournent en parallèle.
 func (ps *ProgressState) CalculateAverage() float64 {
 	var totalProgress float64
 	for _, p := range ps.progresses {
 		totalProgress += p
 	}
-	// Protection robuste contre la division par zéro.
+	// La protection contre la division par zéro est cruciale.
 	if ps.numCalculators == 0 {
 		return 0.0
 	}
 	return totalProgress / float64(ps.numCalculators)
 }
 
-// PrintBar dessine la barre de progression actuelle.
+// PrintBar génère et affiche la représentation textuelle de la barre de progression.
 func (ps *ProgressState) PrintBar(final bool) {
 	avgProgress := ps.CalculateAverage()
 	label := "Progression"
@@ -76,91 +110,114 @@ func (ps *ProgressState) PrintBar(final bool) {
 
 	bar := progressBar(avgProgress, ProgressBarWidth)
 
-	// EXPLICATION ACADÉMIQUE : Manipulation du Curseur et Séquences ANSI
-	// `\r` (Retour Chariot) ramène le curseur au début de la ligne.
-	// [BONIFICATION] `\033[K` (Erase in Line) est une séquence d'échappement ANSI qui efface la ligne
-	// depuis le curseur jusqu'à la fin. C'est plus robuste que `\r` seul, car cela
-	// garantit qu'aucun "résidu" de la ligne précédente ne reste si la nouvelle ligne est plus courte.
+	// EXPLICATION ACADÉMIQUE : Manipulation du Curseur du Terminal
+	// Les séquences d'échappement ANSI sont des commandes spéciales pour contrôler le terminal.
+	// - `\r` (Retour Chariot / Carriage Return) : Déplace le curseur au début de la ligne actuelle
+	//   SANS effacer son contenu.
+	// - `\033[K` (Erase in Line) : Efface la ligne depuis la position actuelle du curseur
+	//   jusqu'à la fin.
+	// La combinaison `\r\033[K` est une technique robuste pour s'assurer que la nouvelle ligne
+	// remplace complètement l'ancienne, même si la nouvelle est plus courte.
 	fmt.Fprintf(ps.out, "\r\033[K%s : %6.2f%% [%s]", label, avgProgress*100, bar)
 
+	// Si c'est l'affichage final, on ajoute un saut de ligne (`\n`) pour que la barre
+	// reste visible et que les affichages suivants apparaissent sur une nouvelle ligne.
 	if final {
-		fmt.Fprintln(ps.out) // Passe à la ligne suivante pour préserver la barre finale.
+		fmt.Fprintln(ps.out)
 	}
 }
 
-// DisplayAggregateProgress gère l'affichage dynamique et agrégé.
-// Elle est conçue pour être lancée dans sa propre goroutine (le "Consommateur").
+// DisplayAggregateProgress est le cœur du consommateur de l'UI.
+// Elle s'exécute dans une goroutine dédiée et gère le cycle de vie de l'affichage de la progression.
 func DisplayAggregateProgress(wg *sync.WaitGroup, progressChan <-chan fibonacci.ProgressUpdate, numCalculators int, out io.Writer) {
-	// Garantit que le WaitGroup est décrémenté à la fin.
+	// `defer wg.Done()` est une instruction cruciale qui garantit que le WaitGroup
+	// est notifié de la fin de cette goroutine, même si elle se termine par une erreur
+	// ou un `return` prématuré. C'est le mécanisme de synchronisation avec l'appelant.
 	defer wg.Done()
 
-	// [BONIFICATION] Gestion du cas limite et Robustesse Concurrente.
+	// Cas limite : si aucun calculateur n'est lancé, on ne fait rien.
+	// Cependant, il est VITAL de vider le canal (`drain the channel`). Si l'appelant
+	// envoie des messages avant de fermer le canal, il pourrait se bloquer indéfiniment
+	// si personne ne lit ces messages. Cette boucle `for range` lit et ignore tous les
+	// messages jusqu'à la fermeture du canal.
 	if numCalculators <= 0 {
-		// CRUCIAL : Il faut consommer (drainer) le canal jusqu'à sa fermeture pour ne pas
-		// bloquer l'appelant (l'orchestrateur) qui pourrait attendre avant de fermer le canal.
 		for range progressChan {
-			// Ne rien faire, juste consommer.
 		}
 		return
 	}
 
 	state := NewProgressState(numCalculators, out)
 
-	// EXPLICATION ACADÉMIQUE : Limitation de Taux (Rate Limiting)
-	// Un `time.Ticker` est utilisé pour limiter le rafraîchissement de l'UI, évitant
-	// de surcharger le terminal (scintillement/"flickering").
+	// EXPLICATION ACADÉMIQUE : Limitation de Taux (Rate Limiting) avec time.Ticker
+	// Un Ticker envoie un événement sur son canal (`ticker.C`) à intervalles réguliers.
+	// C'est la méthode idiomatique en Go pour exécuter une action périodique.
+	// Cela évite de redessiner l'UI à chaque micro-mise à jour reçue, ce qui causerait
+	// un scintillement intense ("flickering") et une utilisation CPU élevée.
 	ticker := time.NewTicker(ProgressRefreshRate)
-	defer ticker.Stop() // Libère les ressources du ticker.
+	// `defer ticker.Stop()` est essentiel pour libérer les ressources internes (timers, goroutines)
+	// associées au ticker lorsque la fonction se termine.
+	defer ticker.Stop()
 
 	// EXPLICATION ACADÉMIQUE : Boucle d'Événements avec `select`
-	// Le cœur de la concurrence réactive en Go. Permet d'attendre et de réagir
-	// simultanément à plusieurs événements (réception d'une mise à jour OU déclenchement du ticker).
+	// C'est un des patrons de concurrence les plus puissants en Go. Le `select` bloque
+	// jusqu'à ce qu'UN de ses `case` soit prêt (non-bloquant).
+	// Cela permet de gérer plusieurs sources d'événements asynchrones de manière élégante.
 	for {
 		select {
-		// Cas 1: Une nouvelle mise à jour est reçue ou le canal est fermé.
+		// CAS 1 : Un message a été reçu sur le canal `progressChan`.
+		// La syntaxe `update, ok := <-progressChan` est idiomatique pour lire d'un canal.
+		// `ok` est `false` si le canal a été fermé et est vide.
 		case update, ok := <-progressChan:
-			// Détection de la fermeture du canal (`ok == false`).
 			if !ok {
-				// Signal de terminaison : les producteurs ont fini.
-				// [REFACTORING] On affiche l'état final réel (qui peut être < 100% si annulé).
+				// Le canal est fermé : c'est le signal de fin envoyé par le producteur.
+				// On effectue un dernier affichage pour montrer l'état final (qui peut
+				// être < 100% en cas d'annulation) avant de terminer la goroutine.
 				state.PrintBar(true)
-				return
+				return // Termine la fonction et la goroutine.
 			}
-			// Mise à jour de l'état interne. L'accès à l'état est sûr car le `select` sérialise les opérations.
+			// Un nouveau message de progression est arrivé. On met à jour notre modèle de données.
 			state.Update(update.CalculatorIndex, update.Value)
 
-		// Cas 2: Le ticker a "sonné".
+		// CAS 2 : Le ticker a envoyé un événement.
 		case <-ticker.C:
-			// Rafraîchissement de l'affichage avec les dernières valeurs reçues.
+			// Il est temps de rafraîchir l'affichage. On redessine la barre de progression
+			// avec les dernières données de progression accumulées.
 			state.PrintBar(false)
 		}
 	}
 }
 
-// progressBar génère une représentation textuelle d'une barre de progression.
+// progressBar génère une chaîne de caractères représentant une barre de progression.
 func progressBar(progress float64, length int) string {
-	// "Clamping" de la valeur dans l'intervalle [0.0, 1.0].
+	// Le "clamping" (bornage) de la valeur entre 0.0 et 1.0 est une mesure de robustesse
+	// pour éviter des calculs invalides si une valeur aberrante est fournie.
 	if progress > 1.0 {
 		progress = 1.0
 	} else if progress < 0.0 {
 		progress = 0.0
 	}
 
-	// [BONIFICATION] Utilisation de runes Unicode pour un rendu visuel moderne.
+	// L'utilisation de runes Unicode (█ et ░) offre un rendu visuel plus agréable
+	// et moderne que les caractères ASCII standards (comme # et -).
 	const (
-		filledChar = '█' // U+2588 (Full Block)
-		emptyChar  = '░' // U+2591 (Light Shade) - plus visible qu'un espace.
+		filledChar = '█' // U+2588 : Bloc plein
+		emptyChar  = '░' // U+2591 : Ombre légère
 	)
 
 	count := int(progress * float64(length))
 
-	// EXPLICATION ACADÉMIQUE : Efficacité avec `strings.Builder`
-	// `strings.Builder` minimise les allocations mémoire par rapport à la concaténation (`+`).
+	// EXPLICATION ACADÉMIQUE : Optimisation de la Construction de Chaînes
+	// En Go, la concaténation de chaînes avec l'opérateur `+` dans une boucle est inefficace
+	// car elle crée une nouvelle chaîne (et donc une nouvelle allocation mémoire) à chaque itération.
+	// `strings.Builder` est conçu pour résoudre ce problème. Il utilise un buffer interne
+	// (un slice de bytes) qui est agrandi au besoin, minimisant ainsi les allocations.
 	var builder strings.Builder
 
-	// [OPTIMISATION] Pré-allocation de la mémoire avec `builder.Grow()`.
-	// Puisque les runes Unicode peuvent prendre plusieurs octets en UTF-8 (ici 3 octets pour █ et ░),
-	// on alloue `length * 3` pour éviter toute réallocation dynamique pendant la boucle.
+	// OPTIMISATION AVANCÉE : `builder.Grow()`
+	// On peut encore améliorer les performances en pré-allouant la taille finale du buffer.
+	// Les runes utilisées ici peuvent occuper jusqu'à 3 octets en encodage UTF-8.
+	// En allouant `length * 3` octets, on s'assure que le buffer n'aura probablement
+	// jamais besoin d'être réalloué dynamiquement pendant la construction de la barre.
 	builder.Grow(length * 3)
 
 	for i := 0; i < length; i++ {
@@ -173,77 +230,79 @@ func progressBar(progress float64, length int) string {
 	return builder.String()
 }
 
-// DisplayResult formate et affiche le résultat final F(n) de manière lisible.
+// DisplayResult formate et affiche le résultat final F(n) et ses métadonnées.
 func DisplayResult(result *big.Int, n uint64, duration time.Duration, verbose bool, out io.Writer) {
 	fmt.Fprintln(out, "\n--- Données du Résultat ---")
 
-	// Affichage de la durée si pertinente (non nulle).
 	if duration > 0 {
 		fmt.Fprintf(out, "Durée d'exécution     : %s\n", duration)
 	}
 
-	// `BitLen()` donne la taille binaire de manière efficace.
+	// `BitLen()` est une méthode très efficace pour obtenir le nombre de bits nécessaires
+	// pour représenter un nombre, ce qui est une mesure de sa "taille" en mémoire.
 	bitLen := result.BitLen()
-	// [BONIFICATION] Amélioration de la lisibilité des métadonnées.
 	fmt.Fprintf(out, "Taille Binaire        : %s bits.\n", formatNumberString(fmt.Sprintf("%d", bitLen)))
 
-	// EXPLICATION ACADÉMIQUE : Coût des conversions Base 2 -> Base 10
-	// La conversion d'un `big.Int` en chaîne décimale (`result.String()`) est coûteuse
-	// (complexité quasi-linéaire). Il faut l'appeler une seule fois.
+	// EXPLICATION ACADÉMIQUE : Coût des Conversions de Base
+	// La conversion d'un `big.Int` (stocké en base 2^64 ou 2^32) en une chaîne de
+	// caractères en base 10 (`result.String()`) est une opération coûteuse, avec une
+	// complexité d'environ O(N*log(N)) où N est le nombre de bits.
+	// Il est donc crucial de n'effectuer cette conversion qu'UNE SEULE FOIS et de
+	// stocker le résultat dans une variable pour le réutiliser.
 	resultStr := result.String()
 	numDigits := len(resultStr)
 	fmt.Fprintf(out, "Chiffres Décimaux     : %s\n", formatNumberString(fmt.Sprintf("%d", numDigits)))
 
-	// [BONIFICATION] Notation Scientifique
-	// Donne une idée immédiate et précise de l'ordre de grandeur pour les grands nombres.
+	// La notation scientifique donne un ordre de grandeur immédiat pour les très grands nombres.
+	// On utilise `big.Float` pour effectuer la conversion avec une haute précision.
 	if numDigits > 6 {
-		// On utilise `big.Float` pour le calcul en virgule flottante de haute précision.
 		f := new(big.Float).SetInt(result)
-		// Le format '%e' fournit la notation scientifique standard (e.g., 1.234567e+08).
+		// Le format '%e' est le standard pour la notation scientifique (ex: 1.234567e+08).
 		fmt.Fprintf(out, "Notation Scientifique : %e\n", f)
 	}
 
-	// Gestion de l'affichage du résultat complet ou tronqué (UX).
 	fmt.Fprintln(out, "\n--- Valeur Calculée ---")
+	// La gestion de l'affichage (complet vs. tronqué) est une question d'expérience
+	// utilisateur (UX) pour éviter d'inonder le terminal avec des millions de chiffres.
 	if verbose {
-		// Mode verbeux : Affichage complet avec séparateurs de milliers.
 		fmt.Fprintf(out, "F(%d) =\n%s\n", n, formatNumberString(resultStr))
 	} else if numDigits > TruncationLimit {
-		// Troncature pour éviter d'inonder le terminal.
 		fmt.Fprintf(out, "F(%d) (Tronqué) = %s...%s\n", n, resultStr[:DisplayEdges], resultStr[numDigits-DisplayEdges:])
 		fmt.Fprintln(out, "(Utilisez le flag -v ou --verbose pour afficher le résultat complet)")
 	} else {
-		// Résultat court : Affichage complet avec séparateurs.
 		fmt.Fprintf(out, "F(%d) = %s\n", n, formatNumberString(resultStr))
 	}
 }
 
-// [BONIFICATION] formatNumberString ajoute des séparateurs de milliers (virgules)
-// à une chaîne représentant un nombre décimal. Implémentation efficace.
+// formatNumberString ajoute des séparateurs de milliers à une chaîne numérique pour une meilleure lisibilité.
+// L'implémentation est optimisée pour minimiser les allocations mémoire.
 func formatNumberString(s string) string {
 	n := len(s)
 	if n <= 3 {
 		return s
 	}
 
-	// Calcul de la capacité nécessaire : n chiffres + (n-1)/3 séparateurs.
+	// On utilise ici aussi `strings.Builder` pour une construction efficace.
 	var builder strings.Builder
-	builder.Grow(n + (n-1)/3)
+	// Calcul de la capacité exacte requise pour éviter les réallocations :
+	// `n` pour les chiffres, et `(n-1)/3` pour le nombre de séparateurs.
+	builder.Grow(n + (n - 1)/3)
 
-	// Gérer le premier groupe (qui peut être < 3 chiffres).
-	// Ex: Pour "12345", n=5. firstGroupLen = 5 % 3 = 2 ("12").
+	// Logique de calcul pour le premier groupe de chiffres (qui peut être de 1, 2 ou 3 chiffres).
+	// Exemple : pour s = "12345" (n=5), n % 3 = 2. Le premier groupe est "12".
+	// Exemple : pour s = "123456" (n=6), n % 3 = 0. On le traite comme un groupe de 3, "123".
 	firstGroupLen := n % 3
 	if firstGroupLen == 0 {
-		firstGroupLen = 3 // Si divisible par 3 (e.g., "123456"), le premier groupe est 3.
+		firstGroupLen = 3
 	}
 
 	// Écriture du premier groupe.
 	builder.WriteString(s[:firstGroupLen])
 
-	// Écriture des groupes restants, précédés d'une virgule.
+	// Itération sur le reste de la chaîne, par blocs de 3 chiffres.
 	for i := firstGroupLen; i < n; i += 3 {
-		builder.WriteByte(',')
-		builder.WriteString(s[i : i+3])
+		builder.WriteByte(',')         // Ajout du séparateur.
+		builder.WriteString(s[i : i+3]) // Ajout du groupe de 3 chiffres.
 	}
 
 	return builder.String()

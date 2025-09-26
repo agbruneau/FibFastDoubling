@@ -1,8 +1,14 @@
-// ACADEMIC EXPLANATION:
-// This file implements Fibonacci calculation via matrix exponentiation,
-// another O(log n) method. It is often conceptually easier to understand
-// than Fast Doubling but can be slightly less performant in practice
-// due to a higher number of multiplications.
+//
+// MODULE ACADÉMIQUE : ALGORITHME D'EXPONENTIATION MATRICIELLE
+//
+// OBJECTIF PÉDAGOGIQUE :
+// Ce fichier implémente le calcul de la suite de Fibonacci via l'exponentiation
+// matricielle, une méthode classique de complexité O(log n). Il sert d'exemple pour :
+//  1. La mise en œuvre de l'algorithme "d'exponentiation par la mise au carré".
+//  2. L'optimisation d'opérations mathématiques (multiplication de matrices symétriques).
+//  3. Le parallélisme de tâches pour les calculs intensifs sur les grands nombres.
+//  4. L'intégration avec un système de gestion de mémoire "zéro-allocation" via des pools d'objets.
+//
 package fibonacci
 
 import (
@@ -13,92 +19,121 @@ import (
 	"sync"
 )
 
-// MatrixExponentiation is an implementation of the `coreCalculator` interface.
-// ACADEMIC EXPLANATION: The Matrix Exponentiation Algorithm (O(log n))
+// MatrixExponentiation est une implémentation de l'interface `coreCalculator`.
 //
-// This method relies on the fact that the Fibonacci sequence can be expressed
-// by a linear transformation represented by a matrix.
+// EXPLICATION ACADÉMIQUE : La Théorie de l'Exponentiation Matricielle (O(log n))
 //
-//	[ F(n+1) ] = [ 1  1 ] * [ F(n)   ]
-//	[ F(n)   ]   [ 1  0 ]   [ F(n-1) ]
+// Cette méthode repose sur une propriété fondamentale de la suite de Fibonacci : elle peut
+// être décrite par une transformation linéaire, représentée par une matrice 2x2.
 //
-// By applying this transformation `n` times, we get:
+// La relation de récurrence F(n) = F(n-1) + F(n-2) peut s'écrire sous forme matricielle :
+//
+//	[ F(n+1) ] = [ 1  1 ] * [  F(n)  ]
+//	[  F(n)  ]   [ 1  0 ]   [ F(n-1) ]
+//
+// En appliquant cette transformation de manière répétée, on obtient :
 //
 //	[ F(n+1) ] = [ 1  1 ]^n * [ F(1) ]
-//	[ F(n)   ]   [ 1  0 ]    [ F(0) ]
+//	[  F(n)  ]   [ 1  0 ]    [ F(0) ]
 //
-// Since F(1)=1 and F(0)=0, calculating F(n) reduces to calculating the matrix
-// Q = [[1, 1], [1, 0]] raised to the power `n-1`, and taking the top-left element.
-// The calculation of Q^n can be done very efficiently in O(log n)
-// steps using the "exponentiation by squaring" algorithm.
+// Puisque F(1)=1 et F(0)=0, le vecteur initial est [1, 0]. Le calcul de F(n) se ramène
+// donc au calcul de la puissance n-1 de la "matrice de Fibonacci" Q = [[1, 1], [1, 0]].
+// Le résultat F(n) est alors l'élément en haut à gauche de la matrice Q^(n-1).
+//
+// L'étape clé est que le calcul de Q^k peut être effectué très efficacement en O(log k)
+// opérations matricielles grâce à l'algorithme "d'exponentiation par la mise au carré"
+// (ou exponentiation binaire), au lieu de k-1 multiplications naïves.
+//
 type MatrixExponentiation struct{}
 
+// Name retourne le nom descriptif de l'algorithme et de ses optimisations.
 func (c *MatrixExponentiation) Name() string {
-	return "MatrixExponentiation (SymmetricOpt+Parallel+ZeroAlloc+LUT)"
+	return "Exponentiation Matricielle (Opt. Symétrique+Parallèle+Zéro-Alloc)"
 }
 
-// executeTasks runs a slice of functions, either sequentially or in parallel,
-// based on the provided flag. This utility abstracts the WaitGroup logic.
-func executeTasks(inParallel bool, tasks []func()) {
-	if inParallel {
-		var wg sync.WaitGroup
-		wg.Add(len(tasks))
-		for _, task := range tasks {
-			go func(f func()) {
-				defer wg.Done()
-				f()
-			}(task)
-		}
-		wg.Wait()
-	} else {
-		for _, task := range tasks {
-			task()
-		}
-	}
-}
-
-// squareSymmetricMatrix calculates the square of a symmetric matrix.
-// ACADEMIC EXPLANATION: Optimization for Symmetric Matrices
-// A standard 2x2 matrix multiplication (M * M) requires 8 integer multiplications.
-// However, if matrix M is symmetric (element [0,1] equals element [1,0]),
-// we can optimize the calculation.
-//
-// Let M = [[a, b], [b, d]].
-// M² = [[a²+b², ab+bd], [ab+bd, b²+d²]]
-//
-// We can calculate all terms of M² with only 4 expensive integer multiplications:
-// a², b², d², and b*(a+d).
-// This is a significant optimization that halves the number of `big.Int.Mul` calls.
-func squareSymmetricMatrix(dest, mat *matrix, state *matrixState, useParallel bool, threshold int) {
-	// Use temporary integers from the state pool.
-	aSquared := state.t1
-	bSquared := state.t2
-	dSquared := state.t3
-	bTimesAPlusD := state.t4
-	aPlusD := state.t5
-
-	aPlusD.Add(mat.a, mat.d)
-
-	tasks := []func(){
-		func() { aSquared.Mul(mat.a, mat.a) },
-		func() { bSquared.Mul(mat.b, mat.b) },
-		func() { dSquared.Mul(mat.d, mat.d) },
-		func() { bTimesAPlusD.Mul(mat.b, aPlusD) },
+// CalculateCore implémente la logique principale de l'algorithme.
+func (c *MatrixExponentiation) CalculateCore(ctx context.Context, reporter ProgressReporter, n uint64, threshold int) (*big.Int, error) {
+	// Cas de base F(0) = 0.
+	if n == 0 {
+		return big.NewInt(0), nil
 	}
 
-	// Execute multiplications, in parallel if numbers are large enough.
-	shouldRunInParallel := useParallel && mat.a.BitLen() > threshold
-	executeTasks(shouldRunInParallel, tasks)
+	// Étape 1 : Acquisition d'un état complet depuis le pool (stratégie "Zéro-Allocation").
+	// Cet état contient toutes les matrices et les entiers temporaires nécessaires, pré-alloués.
+	state := acquireMatrixState()
+	// `defer` garantit que l'état est retourné au pool, même en cas d'erreur. C'est crucial.
+	defer releaseMatrixState(state)
 
-	// Assemble the final result.
-	dest.a.Add(aSquared, bSquared)
-	dest.b.Set(bTimesAPlusD)
-	dest.c.Set(bTimesAPlusD) // Symmetry is preserved.
-	dest.d.Add(bSquared, dSquared)
+	// Pour trouver F(n), nous avons besoin de calculer Q^(n-1).
+	exponent := n - 1
+	numBits := bits.Len64(exponent)
+
+	// Pré-calcul pour le rapport de progression.
+	var invNumBits float64
+	if numBits > 0 {
+		invNumBits = 1.0 / float64(numBits)
+	}
+
+	// Détection de la capacité de parallélisme.
+	useParallel := runtime.NumCPU() > 1
+
+	// --- ALGORITHME D'EXPONENTIATION BINAIRE (PAR LA MISE AU CARRÉ) ---
+	// La boucle parcourt les bits de l'exposant, du moins significatif (LSB) au plus significatif (MSB).
+	// Deux matrices de l'état sont utilisées :
+	// - `res` (résultat) : Accumule le résultat final. Initialisée à la matrice Identité.
+	// - `p` (puissance) : Contient les puissances successives de Q (Q, Q², Q⁴, Q⁸, ...). Initialisée à Q.
+	for i := 0; i < numBits; i++ {
+		// Vérification coopérative de l'annulation (timeout, Ctrl+C).
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Rapport de progression.
+		reporter(float64(i) * invNumBits)
+
+		// ÉTAPE 1 : MULTIPLICATION CONDITIONNELLE
+		// Si le i-ème bit de l'exposant est à 1, on doit multiplier notre résultat
+		// par la puissance actuelle de la matrice de base : res = res * p.
+		if (exponent>>uint(i))&1 == 1 {
+			multiplyMatrices(state.tempMatrix, state.res, state.p, state, useParallel, threshold)
+			// OPTIMISATION : Échange de pointeurs.
+			// Au lieu de copier le contenu de `tempMatrix` dans `res` (ce qui serait coûteux),
+			// on échange simplement les pointeurs. `res` pointe maintenant vers le nouveau résultat,
+			// et l'ancienne matrice `res` devient le nouveau buffer temporaire.
+			state.res, state.tempMatrix = state.tempMatrix, state.res
+		}
+
+		// ÉTAPE 2 : MISE AU CARRÉ
+		// On met la matrice de puissance au carré pour la prochaine itération : p = p * p.
+		// Cette opération est effectuée à chaque tour, que le bit soit 1 ou 0.
+		if i < numBits-1 { // Optimisation : on évite la dernière mise au carré, qui est inutile.
+			// Fait crucial : la matrice de base Q est symétrique. Le carré d'une matrice
+			// symétrique est aussi symétrique. `p` reste donc toujours symétrique.
+			// Nous pouvons donc utiliser une fonction de mise au carré optimisée.
+			squareSymmetricMatrix(state.tempMatrix, state.p, state, useParallel, threshold)
+			// On échange à nouveau les pointeurs pour la même raison d'efficacité.
+			state.p, state.tempMatrix = state.tempMatrix, state.p
+		}
+	}
+
+	// Le résultat F(n) se trouve dans l'élément (0,0) de la matrice résultat finale.
+	// CRUCIAL : On retourne une NOUVELLE copie. Le pointeur `state.res.a` appartient
+	// à l'objet du pool qui va être recyclé. Le retourner directement mènerait à une
+	// corruption de mémoire ("use after free").
+	return new(big.Int).Set(state.res.a), nil
 }
 
-// multiplyMatrices performs a standard 2x2 matrix multiplication.
+// multiplyMatrices effectue une multiplication standard de deux matrices 2x2.
+// C = A * B
 func multiplyMatrices(dest, m1, m2 *matrix, state *matrixState, useParallel bool, threshold int) {
+	// Une multiplication de matrices 2x2 standard requiert 8 multiplications d'entiers
+	// et 4 additions.
+	// C[0,0] = A[0,0]*B[0,0] + A[0,1]*B[1,0]
+	// C[0,1] = A[0,0]*B[0,1] + A[0,1]*B[1,1]
+	// C[1,0] = A[1,0]*B[0,0] + A[1,1]*B[1,0]
+	// C[1,1] = A[1,0]*B[0,1] + A[1,1]*B[1,1]
+	//
+	// Les 8 multiplications sont indépendantes les unes des autres et peuvent donc
+	// être parallélisées.
 	tasks := []func(){
 		func() { state.t1.Mul(m1.a, m2.a) },
 		func() { state.t2.Mul(m1.b, m2.c) },
@@ -110,87 +145,80 @@ func multiplyMatrices(dest, m1, m2 *matrix, state *matrixState, useParallel bool
 		func() { state.t8.Mul(m1.d, m2.d) },
 	}
 
-	// A standard 2x2 matrix multiplication requires 8 independent integer multiplications.
-	// We run them in parallel if the numbers are large enough.
+	// On n'active le parallélisme que si le CPU a plusieurs cœurs et si les nombres
+	// sont assez grands (dépolacement le `threshold`) pour justifier le coût de
+	// création et de synchronisation des goroutines.
 	shouldRunInParallel := useParallel && m1.a.BitLen() > threshold
 	executeTasks(shouldRunInParallel, tasks)
 
-	// The final assembly (additions) is done sequentially.
+	// L'assemblage final (les additions) est fait séquentiellement.
 	dest.a.Add(state.t1, state.t2)
 	dest.b.Add(state.t3, state.t4)
 	dest.c.Add(state.t5, state.t6)
 	dest.d.Add(state.t7, state.t8)
 }
 
-// CalculateCore implements the exponentiation by squaring algorithm.
-// This version uses pointer swapping instead of copying matrix data to avoid
-// overhead, making the state transitions within the loop more efficient.
-func (c *MatrixExponentiation) CalculateCore(ctx context.Context, reporter ProgressReporter, n uint64, threshold int) (*big.Int, error) {
-	if n == 0 {
-		return big.NewInt(0), nil
+// squareSymmetricMatrix calcule le carré d'une matrice symétrique de manière optimisée.
+//
+// EXPLICATION DE L'OPTIMISATION :
+// Soit M une matrice symétrique : M = [[a, b], [b, d]].
+// Le calcul standard de M² = M * M requerrait 8 multiplications d'entiers.
+//
+// Cependant, en développant M², on obtient :
+// M² = [[a²+b², ab+bd], [ab+bd, b²+d²]]
+//    = [[a²+b², b(a+d)], [b(a+d), b²+d²]]
+//
+// On constate que les termes ne dépendent que de 4 calculs coûteux :
+// a², b², d², et b*(a+d).
+// Cette optimisation divise par deux le nombre de multiplications de `big.Int`,
+// ce qui représente un gain de performance considérable.
+func squareSymmetricMatrix(dest, mat *matrix, state *matrixState, useParallel bool, threshold int) {
+	// Utilisation des entiers temporaires du pool.
+	aSquared := state.t1
+	bSquared := state.t2
+	dSquared := state.t3
+	bTimesAPlusD := state.t4
+	aPlusD := state.t5 // Temporaire pour a+d
+
+	// Calcul des 4 termes indépendants.
+	aPlusD.Add(mat.a, mat.d)
+	tasks := []func(){
+		func() { aSquared.Mul(mat.a, mat.a) },
+		func() { bSquared.Mul(mat.b, mat.b) },
+		func() { dSquared.Mul(mat.d, mat.d) },
+		func() { bTimesAPlusD.Mul(mat.b, aPlusD) },
 	}
 
-	// Acquire state (matrices and temporary integers) from the pool.
-	state := acquireMatrixState()
-	defer releaseMatrixState(state)
+	// Exécution en parallèle si les conditions sont remplies.
+	shouldRunInParallel := useParallel && mat.a.BitLen() > threshold
+	executeTasks(shouldRunInParallel, tasks)
 
-	// We need Q^(n-1) to find F(n).
-	exponent := n - 1
-	numBits := bits.Len64(exponent)
+	// Assemblage de la matrice résultat.
+	dest.a.Add(aSquared, bSquared)
+	dest.b.Set(bTimesAPlusD)
+	dest.c.Set(bTimesAPlusD) // La symétrie est préservée.
+	dest.d.Add(bSquared, dSquared)
+}
 
-	// Prevent division by zero for n=1 (exponent=0, numBits=0).
-	var invNumBits float64
-	if numBits > 0 {
-		invNumBits = 1.0 / float64(numBits)
-	}
-
-	useParallel := runtime.NumCPU() > 1
-
-	// Aliases for the matrices from the pool.
-	// resultMatrix holds the accumulated result, starts as Identity.
-	// powerMatrix holds the current power of Q, starts as Q.
-	// tempMatrix is used as a destination for calculations before swapping.
-	resultMatrix := state.res
-	powerMatrix := state.p
-	tempMatrix := state.tempMatrix
-
-	// --- BINARY EXPONENTIATION (EXPONENTIATION BY SQUARING) ALGORITHM ---
-	// We iterate through the bits of the exponent from LSB to MSB.
-	for i := 0; i < numBits; i++ {
-		// Cooperative cancellation check.
-		if err := ctx.Err(); err != nil {
-			return nil, err
+// executeTasks est une fonction utilitaire qui exécute un ensemble de tâches (closures).
+// Elle abstrait la logique de parallélisation via un `sync.WaitGroup`.
+func executeTasks(inParallel bool, tasks []func()) {
+	if inParallel {
+		var wg sync.WaitGroup
+		wg.Add(len(tasks))
+		for _, task := range tasks {
+			// Lancement de chaque tâche dans une goroutine distincte.
+			go func(f func()) {
+				defer wg.Done() // wg.Done() est appelé à la fin de la tâche.
+				f()
+			}(task)
 		}
-		if reporter != nil {
-			reporter(float64(i) * invNumBits)
-		}
-
-		// STEP 1: CONDITIONAL MULTIPLICATION
-		// If the i-th bit of the exponent is 1, multiply our current result
-		// by the current power of the base matrix: result = result * power.
-		if (exponent>>uint(i))&1 == 1 {
-			// The result of the multiplication is placed in tempMatrix.
-			multiplyMatrices(tempMatrix, resultMatrix, powerMatrix, state, useParallel, threshold)
-			// Swap pointers: resultMatrix now points to the new result, and
-			// the old result matrix becomes the new temporary buffer.
-			resultMatrix, tempMatrix = tempMatrix, resultMatrix
-		}
-
-		// STEP 2: SQUARING
-		// Square the power matrix for the next iteration: power = power * power.
-		// Note: The power matrix `p` remains symmetric throughout the process,
-		// so we can use the optimized squaring function.
-		if i < numBits-1 { // Optimization: avoid the last, unnecessary squaring.
-			// The result of the squaring is placed in tempMatrix.
-			squareSymmetricMatrix(tempMatrix, powerMatrix, state, useParallel, threshold)
-			// Swap pointers: powerMatrix now points to the new squared value, and
-			// the old power matrix becomes the new temporary buffer.
-			powerMatrix, tempMatrix = tempMatrix, powerMatrix
+		// wg.Wait() bloque jusqu'à ce que toutes les goroutines aient appelé wg.Done().
+		wg.Wait()
+	} else {
+		// Si le parallélisme n'est pas activé, exécute les tâches séquentiellement.
+		for _, task := range tasks {
+			task()
 		}
 	}
-
-	// The final progress (1.0) is guaranteed by the decorator (FibCalculator).
-	// The result F(n) is in the top-left element of the final result matrix.
-	// Return a copy to ensure isolation from the pool.
-	return new(big.Int).Set(resultMatrix.a), nil
 }
