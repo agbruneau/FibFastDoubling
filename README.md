@@ -1,4 +1,4 @@
-# FibCalc : Calculateur Fibonacci de Haute Performance en Go
+# Calculateur Fibonacci de Haute Performance en Go
 
 ## Introduction
 
