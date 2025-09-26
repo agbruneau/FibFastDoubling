@@ -50,10 +50,10 @@ func TestParseConfig(t *testing.T) {
 		expectedN   uint64
 		expectedAlgo string
 	}{
-		{"Cas par défaut", []string{}, false, 100000000, "all"},
+		{"Cas par défaut", []string{}, false, 250000000, "all"},
 		{"Spécification de N", []string{"-n", "50"}, false, 50, "all"},
-		{"Spécification de l'algo", []string{"-algo", "fast"}, false, 100000000, "fast"},
-		{"Spécification de l'algo (majuscules)", []string{"-algo", "MATRIX"}, false, 100000000, "matrix"},
+		{"Spécification de l'algo", []string{"-algo", "fast"}, false, 250000000, "fast"},
+		{"Spécification de l'algo (majuscules)", []string{"-algo", "MATRIX"}, false, 250000000, "matrix"},
 		{"Argument inconnu", []string{"-unknown"}, true, 0, ""},
 		{"Algo inconnu", []string{"-algo", "invalid"}, true, 0, ""},
 		{"Timeout négatif", []string{"-timeout", "-1s"}, true, 0, ""},
