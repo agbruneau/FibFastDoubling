@@ -417,6 +417,7 @@ func analyzeComparisonResults(results []CalculationResult, config AppConfig, out
 	// Initialiser les largeurs avec les en-têtes de colonnes comme base
 	col1Width := len("Algorithme")
 	col2Width := len("Durée")
+	col3Width := len("Statut")
 
 	// Structure pour stocker les données formatées avant l'affichage
 	type displayRow struct {
@@ -455,13 +456,16 @@ func analyzeComparisonResults(results []CalculationResult, config AppConfig, out
 		if len(displayData[i].Duration) > col2Width {
 			col2Width = len(displayData[i].Duration)
 		}
+		if len(displayData[i].Status) > col3Width {
+			col3Width = len(displayData[i].Status)
+		}
 	}
 
 	// --- Affichage des résultats ---
 	fmt.Fprintln(out, "\n--- Résultats de la Comparaison (Benchmark & Validation) ---")
 
 	// Définir le format des lignes avec des largeurs dynamiques et un padding
-	rowFormat := fmt.Sprintf("  %%-%ds │ %%-%ds │ %%s\n", col1Width, col2Width)
+	rowFormat := fmt.Sprintf("  %%-%ds │ %%-%ds │ %%-%ds\n", col1Width, col2Width, col3Width)
 
 	// Afficher l'en-tête du tableau, avec un espacement vertical
 	fmt.Fprintf(out, "\n"+rowFormat, "Algorithme", "Durée", "Statut")
@@ -470,7 +474,7 @@ func analyzeComparisonResults(results []CalculationResult, config AppConfig, out
 	separator := fmt.Sprintf("  %s┼%s┼%s",
 		strings.Repeat("─", col1Width+1),
 		strings.Repeat("─", col2Width+2),
-		strings.Repeat("─", 45), // Ligne assez longue pour la colonne statut
+		strings.Repeat("─", col3Width+2),
 	)
 	fmt.Fprintln(out, separator)
 
