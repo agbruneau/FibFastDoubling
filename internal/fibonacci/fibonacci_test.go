@@ -35,6 +35,7 @@ import (
 	"math/big"
 	"sync"
 	"testing"
+	"time"
 )
 
 // knownFibResults est une "source de vérité" contenant des valeurs de Fibonacci
@@ -55,6 +56,7 @@ var knownFibResults = []struct {
 	{100, "354224848179261915075"},
 	{200, "280571172992510140037611932413038677189525"},
 	{1000, "43466557686937456435688527675040625802564660517371780402481729089536555417949051890403879840079255169295922593080322634775209689623239873322471161642996440906533187938298969649928516003704476137795166849228875"},
+	{2000, "4224696333392304878706725602341482782579852840250681098010280137314308584370130707224123599639141511088446087538909603607640194711643596029271983312598737326253555802606991585915229492453904998722256795316982874482472992263901833716778060607011615497886719879858311468870876264597369086722884023654422295243347964480139515349562972087652656069529806499841977448720155612802665404554171717881930324025204312082516817125"},
 }
 
 // TestFibonacciCalculators est un test de table complet qui valide toutes les implémentations
@@ -153,6 +155,76 @@ func TestNilCoreCalculatorPanic(t *testing.T) {
 	}()
 	// Cette ligne devrait déclencher une panique.
 	_ = NewCalculator(nil)
+}
+
+// TestProgressReporter vérifie que les calculateurs rapportent leur progression
+// et terminent avec une progression de 1.0.
+func TestProgressReporter(t *testing.T) {
+	calculators := map[string]Calculator{
+		"FastDoubling": NewCalculator(&OptimizedFastDoubling{}),
+		"MatrixExp":    NewCalculator(&MatrixExponentiation{}),
+	}
+
+	for name, calc := range calculators {
+		t.Run(name, func(t *testing.T) {
+			progressChan := make(chan ProgressUpdate, 200)
+			var lastProgress float64
+			var wg sync.WaitGroup
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				for update := range progressChan {
+					if update.Value < lastProgress {
+						t.Errorf("La progression a diminué, ce qui est invalide. Précédent: %f, Actuel: %f", lastProgress, update.Value)
+					}
+					lastProgress = update.Value
+				}
+			}()
+
+			_, err := calc.Calculate(context.Background(), progressChan, 0, 10000, DefaultParallelThreshold)
+			close(progressChan)
+			wg.Wait()
+
+			if err != nil {
+				t.Fatalf("Le calcul a échoué: %v", err)
+			}
+
+			if lastProgress != 1.0 {
+				t.Errorf("La progression finale devrait être 1.0, mais est %f", lastProgress)
+			}
+		})
+	}
+}
+
+// TestContextCancellation vérifie que les calculs s'arrêtent bien lorsqu'un
+// contexte est annulé.
+func TestContextCancellation(t *testing.T) {
+	// On choisit un nombre très grand pour que le calcul soit long.
+	const n = 100_000_000
+
+	calculators := map[string]Calculator{
+		"FastDoubling": NewCalculator(&OptimizedFastDoubling{}),
+		"MatrixExp":    NewCalculator(&MatrixExponentiation{}),
+	}
+
+	for name, calc := range calculators {
+		t.Run(name, func(t *testing.T) {
+			// On crée un contexte qui sera annulé après un court délai.
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+
+			_, err := calc.Calculate(ctx, nil, 0, n, DefaultParallelThreshold)
+
+			// On s'attend à une erreur de type "context deadline exceeded".
+			if err == nil {
+				t.Fatal("Le calcul aurait dû être annulé par le contexte, mais il s'est terminé sans erreur.")
+			}
+			if err != context.DeadlineExceeded {
+				t.Errorf("Erreur inattendue. Attendu: %v, Obtenu: %v", context.DeadlineExceeded, err)
+			}
+		})
+	}
 }
 
 // --- BENCHMARKS ---
