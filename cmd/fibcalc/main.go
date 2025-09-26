@@ -1,7 +1,24 @@
-// EXPLICATION ACADÉMIQUE :
-// Le package `main` est le point d'entrée de l'application.
-// Ce fichier `main.go` agit comme le "chef d'orchestre" : initialisation (configuration, contexte),
-// orchestration des briques logicielles (calculs) et gestion de la fin de vie (codes de sortie, signaux).
+//
+// MODULE ACADÉMIQUE : POINT D'ENTRÉE ET ORCHESTRATION (COMPOSITION ROOT)
+//
+// OBJECTIF PÉDAGOGIQUE :
+// Ce fichier est le "Composition Root" de l'application. C'est ici que toutes les
+// dépendances et les modules sont assemblés ("wired together"). Il illustre des concepts
+// fondamentaux de l'ingénierie logicielle robuste en Go :
+//  1. SÉPARATION DES PRÉOCCUPATIONS : La fonction `main` est minimale et traite avec
+//     les "impuretés" du monde extérieur (OS, arguments, signaux). La logique applicative
+//     pure et testable est déléguée à la fonction `run`.
+//  2. GESTION DU CYCLE DE VIE : Orchestration complète du cycle de vie de l'application,
+//     de l'initialisation (configuration, contexte) à la terminaison (gestion des erreurs,
+//     arrêt propre, codes de sortie).
+//  3. CONCURRENCE STRUCTURÉE : Utilisation de `errgroup` pour gérer des groupes de
+//     goroutines, garantissant qu'aucune ne soit "orpheline" et que les erreurs
+//     soient propagées et gérées correctement.
+//  4. GESTION DES SIGNAUX (GRACEFUL SHUTDOWN) : Intégration idiomatique du `context`
+//     de Go pour répondre aux signaux de l'OS (ex: Ctrl+C) et aux timeouts.
+//  5. INJECTION DE DÉPENDANCES : La fonction `run` reçoit ses dépendances (contexte,
+//     configuration, writer), ce qui la rend indépendante de l'état global et facile à tester.
+//
 package main
 
 import (
@@ -20,43 +37,50 @@ import (
 	"syscall"
 	"time"
 
-	// `golang.org/x/sync/errgroup` fournit une synchronisation de goroutines "structurée",
-	// simplifiant l'attente de groupe et la propagation des erreurs/annulations.
+	// EXPLICATION ACADÉMIQUE : `golang.org/x/sync/errgroup`
+	// Fournit une "concurrence structurée". Contrairement à un `sync.WaitGroup` simple,
+	// un `errgroup` lie un groupe de goroutines à un `context`. Si une goroutine retourne
+	// une erreur ou si le contexte est annulé, le contexte du groupe est annulé,
+	// signalant à toutes les autres goroutines du groupe de s'arrêter.
 	"golang.org/x/sync/errgroup"
 
-	// L'importation depuis `internal/` garantit que la logique métier est encapsulée.
 	"example.com/fibcalc/internal/cli"
 	"example.com/fibcalc/internal/fibonacci"
 )
 
-// Constantes pour les codes de sortie standardisés.
+// EXPLICATION ACADÉMIQUE : Codes de Sortie (Exit Codes)
+// L'utilisation de codes de sortie standardisés est une bonne pratique pour les CLI,
+// car elle permet à d'autres programmes (scripts shell, CI/CD) de réagir de manière
+// appropriée au résultat de l'exécution.
 const (
-	ExitSuccess       = 0
-	ExitErrorGeneric  = 1
-	ExitErrorTimeout  = 2
-	ExitErrorMismatch = 3
-	ExitErrorConfig   = 4   // [BONIFICATION] Erreur spécifique pour les problèmes de configuration/validation
-	ExitErrorCanceled = 130 // Convention pour SIGINT (Ctrl+C)
+	ExitSuccess       = 0   // Opération réussie.
+	ExitErrorGeneric  = 1   // Erreur générique non spécifiée.
+	ExitErrorTimeout  = 2   // L'opération a dépassé le temps imparti.
+	ExitErrorMismatch = 3   // En mode comparaison, les résultats ne correspondent pas.
+	ExitErrorConfig   = 4   // Erreur dans les arguments ou la configuration.
+	ExitErrorCanceled = 130 // Convention pour une terminaison suite à un signal (SIGINT/Ctrl+C).
 )
 
-// Constantes pour la configuration de l'exécution concurrente.
 const (
-	// ProgressBufferMultiplier détermine la taille du buffer du canal de progression
-	// par rapport au nombre de calculateurs. Un buffer évite de bloquer les calculateurs
-	// si l'affichage est momentanément lent.
+	// La taille du buffer du canal de progression est un multiple du nombre de calculateurs.
+	// Un buffer permet aux producteurs (calculateurs) de ne pas bloquer si le consommateur (UI)
+	// est momentanément lent, améliorant le découplage et la performance.
 	ProgressBufferMultiplier = 10
 )
 
-// AppConfig regroupe tous les paramètres de configuration de l'application.
+// AppConfig agrège tous les paramètres de configuration de l'application.
+// C'est une bonne pratique de regrouper la configuration dans une structure dédiée.
 type AppConfig struct {
 	N         uint64
 	Verbose   bool
 	Timeout   time.Duration
-	Algo      string // Sera normalisé en minuscule lors du parsing.
+	Algo      string
 	Threshold int
 }
 
-// [BONIFICATION] Validate vérifie la validité sémantique complète de la configuration.
+// Validate vérifie la validité sémantique de la configuration.
+// Exécuter la validation après le parsing permet de s'assurer que les combinaisons
+// de paramètres sont logiques (principe du "Fail-Fast").
 func (c AppConfig) Validate(availableAlgos []string) error {
 	if c.Timeout <= 0 {
 		return errors.New("le timeout (-timeout) doit être positif")
@@ -64,38 +88,40 @@ func (c AppConfig) Validate(availableAlgos []string) error {
 	if c.Threshold < 0 {
 		return fmt.Errorf("le seuil (-threshold) ne peut pas être négatif (valeur : %d)", c.Threshold)
 	}
-
-	// Validation de l'algorithme sélectionné.
 	if c.Algo != "all" {
 		if _, ok := calculatorRegistry[c.Algo]; !ok {
-			// Message d'erreur dynamique et précis.
 			return fmt.Errorf("algorithme '%s' inconnu. Options valides : 'all' ou [%s]", c.Algo, strings.Join(availableAlgos, ", "))
 		}
 	}
 	return nil
 }
 
-// EXPLICATION ACADÉMIQUE : Patron de conception "Registry"
-// `calculatorRegistry` associe le nom de l'algorithme à une implémentation concrète.
-// Permet un découplage fort et une extensibilité facile (Principe Ouvert/Fermé).
+// EXPLICATION ACADÉMIQUE : Patron de Conception "Registry"
+// Le `calculatorRegistry` est une carte qui associe un identifiant (string) à une
+// implémentation concrète de l'interface `fibonacci.Calculator`. Ce patron permet
+// un couplage faible et respecte le Principe Ouvert/Fermé (SOLID) : on peut ajouter
+// de nouveaux algorithmes (ouvert à l'extension) sans modifier le code qui l'utilise
+// (fermé à la modification).
 var calculatorRegistry = map[string]fibonacci.Calculator{
-	// Le décorateur `NewCalculator` ajoute des fonctionnalités communes (e.g., Lookup Table).
 	"fast":   fibonacci.NewCalculator(&fibonacci.OptimizedFastDoubling{}),
 	"matrix": fibonacci.NewCalculator(&fibonacci.MatrixExponentiation{}),
 }
 
-// init est exécuté automatiquement avant main().
-// [BONIFICATION] Utilisé ici pour valider l'intégrité du registry au démarrage (fail-fast).
+// EXPLICATION ACADÉMIQUE : La fonction `init`
+// `init` est exécutée par le runtime Go avant `main`. Elle est utile pour des validations
+// ou initialisations qui doivent avoir lieu une seule fois au démarrage. Ici, on l'utilise
+// pour une "vérification de santé" (sanity check) : s'assurer qu'un développeur n'a pas
+// accidentellement enregistré un calculateur `nil`, ce qui causerait un "panic" plus tard.
 func init() {
 	for name, calc := range calculatorRegistry {
 		if calc == nil {
-			// panic est approprié ici car c'est une erreur de programmation irrécupérable.
 			panic(fmt.Sprintf("Erreur d'initialisation (développement) : le calculateur '%s' est nil dans le registry.", name))
 		}
 	}
 }
 
-// getSortedCalculatorKeys retourne les clés du registry triées pour un affichage déterministe.
+// getSortedCalculatorKeys retourne les clés du registre triées.
+// C'est essentiel pour garantir un affichage déterministe et cohérent à chaque exécution.
 func getSortedCalculatorKeys() []string {
 	keys := make([]string, 0, len(calculatorRegistry))
 	for k := range calculatorRegistry {
@@ -105,81 +131,63 @@ func getSortedCalculatorKeys() []string {
 	return keys
 }
 
-// main est le point d'entrée du programme. Il gère l'interaction avec l'OS.
+// main est le point d'entrée. Son rôle est de gérer les interactions avec l'OS
+// et d'orchestrer les composants de haut niveau.
 func main() {
-	// 1. Analyse de la configuration. On utilise os.Stderr pour les erreurs/aide.
-	// On passe os.Args[1:] (tous les arguments sauf le nom du programme).
+	// Étape 1 : Analyser la configuration depuis les arguments de la ligne de commande.
 	config, err := parseConfig(os.Args[0], os.Args[1:], os.Stderr)
 	if err != nil {
-		// Gestion spécifique de la demande d'aide (-h ou --help).
 		if errors.Is(err, flag.ErrHelp) {
-			// Le message d'aide a déjà été affiché par FlagSet dans parseConfig.
 			os.Exit(ExitSuccess)
 		}
-		// Autres erreurs (parsing invalide ou échec de validation). Le détail a été affiché.
 		os.Exit(ExitErrorConfig)
 	}
 
-	// 2. Exécution de la logique principale.
-	// EXPLICATION ACADÉMIQUE : Séparation de la logique
-	// La logique applicative est dans `run`. `main` interagit avec les éléments
-	// globaux (OS), tandis que `run` prend ses dépendances (contexte, config, sortie)
-	// en arguments, permettant des tests unitaires contrôlés.
+	// Étape 2 : Démarrer la logique applicative principale.
+	// `context.Background()` fournit le contexte racine, qui n'est jamais annulé.
 	exitCode := run(context.Background(), config, os.Stdout)
 
-	// 3. Terminaison du programme.
+	// Étape 3 : Terminer le programme avec le code de sortie approprié.
 	os.Exit(exitCode)
 }
 
-// [REFACTORING MAJEUR] : Utilisation de FlagSet pour une meilleure testabilité.
-// parseConfig initialise la configuration à partir des arguments de la ligne de commande.
+// parseConfig analyse les arguments, valide la configuration et la retourne.
+// EXPLICATION ACADÉMIQUE : Testabilité du Parsing d'Arguments
+// En créant un `flag.NewFlagSet` local au lieu d'utiliser le `flag` global, et en
+// acceptant les arguments (`args`) et le writer d'erreurs (`errorWriter`) comme
+// paramètres, cette fonction devient pure et facilement testable unitairement,
+// sans dépendre de l'état global du programme ou de `os.Args`.
 func parseConfig(programName string, args []string, errorWriter io.Writer) (AppConfig, error) {
-	// EXPLICATION ACADÉMIQUE : flag.NewFlagSet
-	// On crée un FlagSet local au lieu d'utiliser le `flag.CommandLine` global.
-	// Cela isole la gestion des arguments et améliore considérablement la testabilité.
-	// flag.ContinueOnError permet de gérer les erreurs de parsing nous-mêmes.
 	fs := flag.NewFlagSet(programName, flag.ContinueOnError)
 	fs.SetOutput(errorWriter)
 
-	// [BONIFICATION] Génération dynamique du message d'aide.
 	availableAlgos := getSortedCalculatorKeys()
 	algoHelp := fmt.Sprintf("Algorithme : 'all' (comparaison) ou l'un parmi : [%s].", strings.Join(availableAlgos, ", "))
 
 	config := AppConfig{}
-
-	// EXPLICATION ACADÉMIQUE : Fonctions `Var`
-	// OPTIMISATION : Utilisation des variantes "Var" (e.g., Uint64Var) pour lier directement
-	// les flags aux champs de la structure, évitant les variables pointeurs intermédiaires.
 	fs.Uint64Var(&config.N, "n", 100000000, "L'indice 'n' de la séquence de Fibonacci à calculer.")
 	fs.BoolVar(&config.Verbose, "v", false, "Affiche le résultat complet (non tronqué).")
-	// Ajout d'un alias long standard.
 	fs.BoolVar(&config.Verbose, "verbose", false, "Affiche le résultat complet (non tronqué).")
 	fs.DurationVar(&config.Timeout, "timeout", 5*time.Minute, "Délai maximum d'exécution (ex: 30s, 1m).")
 	fs.StringVar(&config.Algo, "algo", "all", algoHelp)
-	fs.IntVar(&config.Threshold, "threshold", fibonacci.DefaultParallelThreshold, "Seuil (en bits) pour activer la multiplication parallèle (Karatsuba).")
+	fs.IntVar(&config.Threshold, "threshold", fibonacci.DefaultParallelThreshold, "Seuil (en bits) pour activer la multiplication parallèle.")
 
-	// Analyse des arguments.
 	if err := fs.Parse(args); err != nil {
-		// Retourne l'erreur (peut être flag.ErrHelp).
 		return AppConfig{}, err
 	}
 
-	// Normalisation des entrées.
 	config.Algo = strings.ToLower(config.Algo)
 
-	// Validation sémantique centralisée.
 	if err := config.Validate(availableAlgos); err != nil {
-		// Affiche l'erreur spécifique et l'usage standard.
 		fmt.Fprintln(errorWriter, "Erreur de configuration :", err)
 		fs.Usage()
-		// On retourne une erreur générique pour signaler l'échec à main().
 		return AppConfig{}, errors.New("configuration invalide")
 	}
 
 	return config, nil
 }
 
-// CalculationResult stocke le résultat d'un seul calcul et ses métadonnées.
+// CalculationResult stocke le résultat d'un calcul et ses métadonnées.
 type CalculationResult struct {
 	Name     string
 	Result   *big.Int
@@ -187,48 +195,36 @@ type CalculationResult struct {
 	Err      error
 }
 
-// run contient la logique principale de l'application. Elle est conçue pour être testable.
+// run contient la logique principale de l'application. Elle est testable.
 func run(ctx context.Context, config AppConfig, out io.Writer) int {
-	// --- GESTION ROBUSTE DU CONTEXTE (Timeout & Signaux) ---
-	// EXPLICATION ACADÉMIQUE : Gestion des ressources et Annulation
-	// Le `context` est utilisé pour propager l'annulation à travers l'application.
-
-	// 1. Timeout Global : Crée un contexte qui s'annule automatiquement après le délai.
+	// --- GESTION DU CONTEXTE ET DE L'ANNULATION ---
+	// EXPLICATION ACADÉMIQUE : Composition des Contextes pour un Arrêt Propre (Graceful Shutdown)
+	// Le `context` de Go est un mécanisme puissant pour propager des signaux d'annulation.
+	// Ici, nous composons deux types d'annulation :
+	// 1. Basée sur le temps (`context.WithTimeout`) : Annule si le calcul dure trop longtemps.
+	// 2. Basée sur un signal OS (`signal.NotifyContext`) : Annule si l'utilisateur appuie sur Ctrl+C.
+	// Le contexte `ctx` passé aux fonctions en aval sera annulé si L'UN OU L'AUTRE de ces événements se produit.
+	// Les `defer cancel()` sont cruciaux pour libérer les ressources associées aux contextes.
 	ctx, cancelTimeout := context.WithTimeout(ctx, config.Timeout)
-	// `defer` garantit la libération des ressources associées au timer (essentiel pour éviter les fuites).
 	defer cancelTimeout()
-
-	// 2. Gestion des Signaux OS (Graceful Shutdown) :
-	// Crée un contexte qui s'annule si SIGINT (Ctrl+C) ou SIGTERM est reçu.
 	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
-	// --- INITIALISATION & CONFIGURATION ---
 	fmt.Fprintln(out, "--- Configuration ---")
 	fmt.Fprintf(out, "Calcul de F(%d).\n", config.N)
 	fmt.Fprintf(out, "Système : CPU Cores=%d | Go Runtime=%s\n", runtime.NumCPU(), runtime.Version())
 	fmt.Fprintf(out, "Paramètres : Timeout=%s | Parallel Threshold=%d bits\n", config.Timeout, config.Threshold)
 
-	// --- SÉLECTION DES CALCULATEURS ---
-	// [REFACTORING] Logique extraite dans une fonction dédiée.
-	// Puisque la configuration est déjà validée, cette étape ne peut pas échouer.
 	calculatorsToRun := getCalculatorsToRun(config)
-
-	// Affichage du mode d'exécution.
 	if len(calculatorsToRun) > 1 {
 		fmt.Fprintln(out, "Mode : Comparaison (Exécution parallèle).")
 	} else {
-		// On sait qu'il y a au moins un calculateur car le registre n'est pas vide (vérifié par init) et la config est valide.
-		fmt.Fprintln(out, "Mode : Simple exécution.")
-		fmt.Fprintf(out, "Algorithme : %s\n", calculatorsToRun[0].Name())
+		fmt.Fprintf(out, "Mode : Simple exécution. Algorithme : %s\n", calculatorsToRun[0].Name())
 	}
-
 	fmt.Fprintln(out, "\n--- Exécution ---")
 
-	// --- EXÉCUTION ET ANALYSE ---
 	results := executeCalculations(ctx, calculatorsToRun, config, out)
 
-	// Cas 1 : Un seul calcul demandé.
 	if len(results) == 1 {
 		res := results[0]
 		fmt.Fprintln(out, "\n--- Résultat Final ---")
@@ -239,16 +235,12 @@ func run(ctx context.Context, config AppConfig, out io.Writer) int {
 		return ExitSuccess
 	}
 
-	// Cas 2 : Comparaison (mode "all").
 	return analyzeComparisonResults(results, config, out)
 }
 
-// getCalculatorsToRun sélectionne les calculateurs en fonction de la configuration validée.
+// getCalculatorsToRun sélectionne les calculateurs à exécuter.
 func getCalculatorsToRun(config AppConfig) []fibonacci.Calculator {
-	// config.Algo est déjà validé et normalisé (minuscule).
-
 	if config.Algo == "all" {
-		// Mode "all" : On utilise les clés triées pour garantir un ordre déterministe.
 		keys := getSortedCalculatorKeys()
 		calculators := make([]fibonacci.Calculator, len(keys))
 		for i, k := range keys {
@@ -256,103 +248,74 @@ func getCalculatorsToRun(config AppConfig) []fibonacci.Calculator {
 		}
 		return calculators
 	}
-
-	// Mode simple : On sait que l'algorithme existe car il a été validé par AppConfig.Validate().
 	return []fibonacci.Calculator{calculatorRegistry[config.Algo]}
 }
 
-// executeCalculations orchestre l'exécution parallèle des calculs (Concurrence Structurée).
+// executeCalculations orchestre l'exécution concurrente des calculs.
+// EXPLICATION ACADÉMIQUE : Patron de Concurrence "Fan-Out / Fan-In"
 func executeCalculations(ctx context.Context, calculators []fibonacci.Calculator, config AppConfig, out io.Writer) []CalculationResult {
-	// EXPLICATION ACADÉMIQUE : `errgroup.WithContext`
-	// Crée un groupe de goroutines et un contexte dérivé.
 	g, ctx := errgroup.WithContext(ctx)
-
 	results := make([]CalculationResult, len(calculators))
-	// Canal "buffered" pour agréger les mises à jour de progression sans bloquer les workers.
 	progressChan := make(chan fibonacci.ProgressUpdate, len(calculators)*ProgressBufferMultiplier)
 
-	// --- PATRON FAN-OUT : Lancement des workers de calcul (Producteurs) ---
+	// --- Étape 1 : FAN-OUT (Distribution) ---
+	// On lance une goroutine ("worker") pour chaque calcul à effectuer.
 	for i, calc := range calculators {
-		// EXPLICATION ACADÉMIQUE : Capture des variables de boucle
-		// CRUCIAL (avant Go 1.22) : Créer des copies locales (`idx`, `calculator`) avant
-		// de les utiliser dans la goroutine (closure). Sinon, toutes les goroutines
-		// utiliseraient la dernière valeur de la boucle (bug classique de concurrence).
-		idx := i
-		calculator := calc
-
-		// Lancement de la tâche dans une goroutine gérée par le groupe.
+		// EXPLICATION ACADÉMIQUE : Capture de Variable de Boucle
+		// Avant Go 1.22, les variables de boucle `i` et `calc` étaient partagées par toutes
+		// les itérations. Sans ces copies locales (`idx`, `calculator`), toutes les goroutines
+		// auraient capturé les valeurs de la DERNIÈRE itération, un bug de concurrence classique.
+		idx, calculator := i, calc
 		g.Go(func() error {
 			startTime := time.Now()
-
-			// Exécution du calcul (appel bloquant). Le contexte permet l'annulation interne.
 			res, err := calculator.Calculate(ctx, progressChan, idx, config.N, config.Threshold)
 
-			// Stockage du résultat. C'est "thread-safe" car chaque goroutine écrit à un index unique.
+			// Écriture "Thread-Safe" : Chaque goroutine écrit dans un index unique du slice `results`,
+			// il n'y a donc pas de conflit d'accès ("race condition") et pas besoin de mutex.
 			results[idx] = CalculationResult{
-				Name:     calculator.Name(),
-				Result:   res,
-				Duration: time.Since(startTime),
-				Err:      err,
+				Name: calculator.Name(), Result: res, Duration: time.Since(startTime), Err: err,
 			}
 
-			// DÉCISION DE CONCEPTION (Benchmark) :
-			// On retourne toujours `nil` pour empêcher `errgroup` d'annuler le contexte
-			// si un calcul échoue ("fail-fast"). Dans un benchmark, on veut que tous les
-			// algorithmes tentent de terminer (sauf timeout global). L'erreur est stockée
-			// dans `results[idx]` pour analyse ultérieure.
+			// DÉCISION DE CONCEPTION : Dans un benchmark, un échec ne doit pas tout arrêter.
+			// On retourne `nil` pour que `errgroup` ne déclenche pas l'annulation du contexte
+			// si un seul calcul échoue. L'erreur est gérée plus tard.
 			return nil
 		})
 	}
 
-	// --- GESTION DE L'AFFICHAGE (Consommateur) ---
+	// --- Consommateur d'UI (lancé en parallèle) ---
 	var displayWg sync.WaitGroup
 	displayWg.Add(1)
 	go cli.DisplayAggregateProgress(&displayWg, progressChan, len(calculators), out)
 
-	// --- SÉQUENCE DE FERMETURE (Coordination / FAN-IN) ---
-
+	// --- Étape 2 : FAN-IN (Synchronisation et Collecte) ---
+	// SÉQUENCE D'ARRÊT CRITIQUE :
 	// 1. Attendre la fin de tous les producteurs (calculateurs).
-	// `g.Wait()` bloque jusqu'à la fin de toutes les goroutines du groupe.
 	_ = g.Wait()
-
-	// 2. Fermer le canal central.
-	// Signale au consommateur qu'il n'y aura plus de messages.
-	// C'est sûr car tous les producteurs ont terminé (grâce à g.Wait()).
+	// 2. Fermer le canal de communication. C'est sûr car plus aucun producteur n'écrit.
+	//    La fermeture signale au consommateur (UI) qu'il n'y aura plus de messages.
 	close(progressChan)
-
-	// 3. Attendre la fin du consommateur (affichage).
-	// Assure que tous les messages restants dans le canal ont été traités.
+	// 3. Attendre la fin du consommateur. Cela garantit que l'UI a bien traité tous
+	//    les messages restants et a fini son affichage avant de continuer.
 	displayWg.Wait()
 
 	return results
 }
 
-// analyzeComparisonResults valide l'intégrité et compare les performances en mode "all".
+// analyzeComparisonResults analyse les résultats en mode "all".
 func analyzeComparisonResults(results []CalculationResult, config AppConfig, out io.Writer) int {
 	fmt.Fprintln(out, "\n--- Résultats de la Comparaison (Benchmark & Validation) ---")
-
-	// Tri des résultats pour un affichage intuitif.
 	sort.Slice(results, func(i, j int) bool {
-		resI := results[i]
-		resJ := results[j]
-
-		// Règle 1 : Les succès apparaissent avant les échecs.
-		if resI.Err == nil && resJ.Err != nil {
-			return true
+		// Tri complexe pour un affichage lisible : succès d'abord, puis par durée.
+		if (results[i].Err == nil) != (results[j].Err == nil) {
+			return results[i].Err == nil
 		}
-		if resI.Err != nil && resJ.Err == nil {
-			return false
-		}
-
-		// Règle 2 : Si les statuts sont identiques, on trie par durée (du plus rapide au plus lent).
-		return resI.Duration < resJ.Duration
+		return results[i].Duration < results[j].Duration
 	})
 
 	var firstValidResult *big.Int
 	var firstError error
 	successCount := 0
-
-	// Affichage des résultats triés et collecte des informations de validation.
 	for _, res := range results {
 		status := "Succès"
 		if res.Err != nil {
@@ -369,59 +332,52 @@ func analyzeComparisonResults(results []CalculationResult, config AppConfig, out
 		fmt.Fprintf(out, "  - %-65s | Durée: %-15s | Statut: %s\n", res.Name, res.Duration.String(), status)
 	}
 
-	// Analyse globale
 	if successCount == 0 {
 		fmt.Fprintln(out, "\nStatut Global : Échec. Tous les calculs ont échoué.")
-		// On utilise la première erreur rencontrée pour déterminer le code de sortie.
 		return handleCalculationError(firstError, 0, config.Timeout, out)
 	}
 
-	// Validation de la cohérence (Test d'intégrité) :
-	// On vérifie que tous les algorithmes qui ont réussi ont produit le MÊME résultat.
+	// Validation croisée : tous les succès doivent donner le même résultat.
 	mismatch := false
 	for _, res := range results {
-		// `big.Int.Cmp` est la méthode correcte pour comparer des `big.Int`.
 		if res.Err == nil && res.Result.Cmp(firstValidResult) != 0 {
 			mismatch = true
 			break
 		}
 	}
-
 	if mismatch {
 		fmt.Fprintln(out, "\nStatut Global : Échec Critique ! Incohérence détectée (les algorithmes produisent des résultats différents).")
 		return ExitErrorMismatch
 	}
 
 	fmt.Fprintln(out, "\nStatut Global : Succès. Tous les résultats valides sont identiques.")
-	// Affiche le résultat final (ils sont tous identiques). La durée (0) n'est pas pertinente ici.
 	cli.DisplayResult(firstValidResult, config.N, 0, config.Verbose, out)
 	return ExitSuccess
 }
 
-// handleCalculationError interprète les erreurs et détermine le code de sortie approprié.
+// handleCalculationError interprète une erreur et retourne le code de sortie approprié.
 func handleCalculationError(err error, duration time.Duration, timeout time.Duration, out io.Writer) int {
 	if err == nil {
 		return ExitSuccess
 	}
-
 	msgSuffix := ""
 	if duration > 0 {
 		msgSuffix = fmt.Sprintf(" après %s", duration)
 	}
 
-	// EXPLICATION ACADÉMIQUE : `errors.Is`
-	// Manière idiomatique et robuste de vérifier les erreurs en Go. Elle permet de
-	// vérifier si une erreur dans une chaîne d'erreurs (error wrapping) correspond
-	// à une valeur spécifique (comme `context.DeadlineExceeded`).
+	// EXPLICATION ACADÉMIQUE : `errors.Is` vs `==`
+	// Utiliser `errors.Is(err, context.DeadlineExceeded)` est plus robuste que `err == context.DeadlineExceeded`.
+	// `errors.Is` peut "déballer" (`unwrap`) une chaîne d'erreurs pour voir si l'erreur
+	// recherchée s'y trouve. C'est essentiel car une bibliothèque peut retourner une erreur
+	// qui "enveloppe" l'erreur de contexte originale (ex: `fmt.Errorf("le calcul a échoué: %w", ctx.Err())`).
 	if errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(out, "Statut : Échec (Timeout). Le délai imparti (%s) a été dépassé%s.\n", timeout, msgSuffix)
 		return ExitErrorTimeout
-	} else if errors.Is(err, context.Canceled) {
-		// Cela couvre généralement l'annulation par signal (Ctrl+C) ou une annulation interne.
+	}
+	if errors.Is(err, context.Canceled) {
 		fmt.Fprintf(out, "Statut : Annulé (Signal reçu ou annulation interne)%s.\n", msgSuffix)
 		return ExitErrorCanceled
-	} else {
-		fmt.Fprintf(out, "Statut : Échec. Erreur interne inattendue : %v\n", err)
-		return ExitErrorGeneric
 	}
+	fmt.Fprintf(out, "Statut : Échec. Erreur interne inattendue : %v\n", err)
+	return ExitErrorGeneric
 }
